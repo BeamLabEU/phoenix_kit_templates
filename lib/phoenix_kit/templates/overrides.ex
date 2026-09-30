@@ -64,10 +64,10 @@ defmodule PhoenixKit.Templates.Overrides do
 
   `name` and `locale` are matched against strict patterns before they are ever
   joined onto a root. A name is `[a-z0-9][a-z0-9_\-]*` with an optional single
-  leading underscore; dots and slashes never match. They are literals at every current call site, but this
-  module turns a name into a filesystem read, and that is not a boundary to
-  leave to the caller's good behaviour — `../../../etc/passwd` resolves to no
-  override rather than to a file.
+  leading underscore; dots and slashes never match. They are literals at every
+  current call site, but this module turns a name into a filesystem read, and
+  that is not a boundary to leave to the caller's good behaviour —
+  `../../../etc/passwd` resolves to no override rather than to a file.
   """
 
   @parts %{subject: "txt", text: "txt", html: "html"}

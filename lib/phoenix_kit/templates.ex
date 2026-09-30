@@ -50,8 +50,9 @@ defmodule PhoenixKit.Templates do
   This is also why `name` is the only identifier and is validated as
   `[a-z0-9][a-z0-9_\-]*` with one optional leading underscore (see "Reserved
   names" in `PhoenixKit.Templates.Overrides`): it is a path segment, so it must
-  be filesystem-safe. It is slug-shaped by necessity, which is what makes a separate slug field a
-  second spelling of a constraint the path already enforces.
+  be filesystem-safe. It is slug-shaped by necessity, which is what makes a
+  separate slug field a second spelling of a constraint the path already
+  enforces.
 
   ## Resolution
 
