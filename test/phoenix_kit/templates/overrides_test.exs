@@ -79,6 +79,72 @@ defmodule PhoenixKit.Templates.OverridesTest do
     end
   end
 
+  describe "read/4 reserved names with a leading underscore" do
+    test "finds a file under _layout", %{tmp_dir: root} do
+      write(root, "_layout", "html.html", "<p>{{{content}}}</p>")
+
+      assert Overrides.read([root], "_layout", :html, nil) == "<p>{{{content}}}</p>"
+    end
+
+    test "prefers the locale file, then falls back to the locale-less one", %{tmp_dir: root} do
+      write(root, "_layout", "html.de.html", "de")
+      write(root, "_layout", "html.html", "plain")
+
+      assert Overrides.read([root], "_layout", :html, "de") == "de"
+      assert Overrides.read([root], "_layout", :html, "de-AT") == "de"
+      assert Overrides.read([root], "_layout", :html, "fr") == "plain"
+      assert Overrides.read([root], "_layout", :html, nil) == "plain"
+    end
+
+    test "falls back to the locale-less file when there is no locale file", %{tmp_dir: root} do
+      write(root, "_layout", "html.html", "plain")
+
+      assert Overrides.read([root], "_layout", :html, "en-GB") == "plain"
+    end
+
+    test "is nil when the host ships no layout", %{tmp_dir: root} do
+      assert Overrides.read([root], "_layout", :html, "en") == nil
+    end
+
+    test "ordinary names keep working", %{tmp_dir: root} do
+      write(root, "a", "text.txt", "one")
+      write(root, "a_b-c9", "text.txt", "two")
+      write(root, "9lives", "text.txt", "three")
+
+      assert Overrides.read([root], "a", :text, nil) == "one"
+      assert Overrides.read([root], "a_b-c9", :text, nil) == "two"
+      assert Overrides.read([root], "9lives", :text, nil) == "three"
+    end
+
+    test "only a single leading underscore is accepted", %{tmp_dir: root} do
+      File.write!(Path.join(root, "secret.txt"), "top secret")
+      write(root, "_x", "text.txt", "ok")
+      write(root, "__x", "text.txt", "double")
+      write(root, "_", "text.txt", "bare")
+      write(root, "_-x", "text.txt", "dash")
+      write(root, "._x", "text.txt", "dot")
+
+      assert Overrides.read([root], "_x", :text, nil) == "ok"
+
+      for name <- ["__x", "_", "_-x", "_../x", "._x", "_.x", "_/x", "_..", "_x/../_x"] do
+        assert Overrides.read([root], name, :text, nil) == nil,
+               "expected #{inspect(name)} to resolve to no override"
+      end
+    end
+
+    test "rejected underscore names mint no cache entries", %{tmp_dir: root} do
+      Overrides.read([root], "_layout", :html, nil)
+      before = cache_keys(root)
+
+      for name <- ["__x", "_", "_-x", "_../x", "._x"] do
+        Overrides.read([root], name, :html, nil)
+        Overrides.read([root], name, :html, "de")
+      end
+
+      assert cache_keys(root) == before
+    end
+  end
+
   describe "read/4 path safety" do
     test "refuses a name that would escape the root", %{tmp_dir: root} do
       # This module turns a caller-supplied name into a filesystem read; that is

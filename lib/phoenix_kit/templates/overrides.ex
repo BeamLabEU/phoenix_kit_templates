@@ -40,6 +40,16 @@ defmodule PhoenixKit.Templates.Overrides do
   `text.txt`. A part with no file at all resolves to `nil`, and the caller falls
   back to its own default.
 
+  ## Reserved names
+
+  A name may start with **one** underscore (`_layout`). Such names are
+  reserved for shared parts that the *caller* assembles around a message — the
+  first is `_layout`, the wrapper core puts around emails. This package knows
+  nothing about layouts and wraps nothing: it finds `_layout/html.html` (and
+  `html.<locale>.html`) exactly as it finds any other name. The underscore only
+  keeps such a directory from colliding with a template name, since ordinary
+  names cannot start with one.
+
   ## Runtime, not compile time
 
   Overrides live in the *host* application, which is compiled separately from
@@ -60,7 +70,7 @@ defmodule PhoenixKit.Templates.Overrides do
 
   @parts %{subject: "txt", text: "txt", html: "html"}
 
-  @name_pattern ~r/\A[a-z0-9][a-z0-9_\-]*\z/
+  @name_pattern ~r/\A_?[a-z0-9][a-z0-9_\-]*\z/
   @locale_pattern ~r/\A[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,3}\z/
 
   @typedoc "Which part of a template to look for."

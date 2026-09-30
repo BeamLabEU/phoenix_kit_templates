@@ -85,10 +85,21 @@ Overrides live in the host application, which compiles separately from this
 package — so they are read at runtime and cached in `:persistent_term`, the
 absence of a file included.
 
+### Reserved names: a leading underscore
+
+A name may start with a single underscore (`_layout`, not `__layout`). Names
+like that are reserved for shared parts that the caller assembles around a
+message; the first is `_layout`, which core wraps around emails built from a
+file or from a default text. This package knows nothing about layouts and wraps
+nothing — it only finds `priv/phoenix_kit_templates/_layout/html.html` (or
+`html.<locale>.html`) the same way it finds any other name. Ordinary template
+names cannot start with an underscore, so the two never collide.
+
 ### The name is the slug
 
 There is no separate slug, and no `display_name`. `name` is validated as
-`[a-z0-9][a-z0-9_\-]*` — slug-shaped by construction, because it is a directory
+`[a-z0-9][a-z0-9_\-]*` (with one optional leading underscore, see below) —
+slug-shaped by construction, because it is a directory
 name on disk and has to be safe to join onto a path.
 
 The database schema this replaces carried both, for a reason that no longer
