@@ -126,7 +126,7 @@ defmodule PhoenixKit.Templates.OverridesTest do
 
       assert Overrides.read([root], "_x", :text, nil) == "ok"
 
-      for name <- ["__x", "_", "_-x", "_../x", "._x", "_.x", "_/x", "_..", "_x/../_x"] do
+      for name <- ["__x", "_", "_-x", "_../x", "._x", "_.x", "_/x", "_..", "_x/../_x", "_x\n"] do
         assert Overrides.read([root], name, :text, nil) == nil,
                "expected #{inspect(name)} to resolve to no override"
       end
@@ -136,7 +136,7 @@ defmodule PhoenixKit.Templates.OverridesTest do
       Overrides.read([root], "_layout", :html, nil)
       before = cache_keys(root)
 
-      for name <- ["__x", "_", "_-x", "_../x", "._x"] do
+      for name <- ["__x", "_", "_-x", "_../x", "._x", "_layout\n", "_.x", "_/x", "_.."] do
         Overrides.read([root], name, :html, nil)
         Overrides.read([root], name, :html, "de")
       end
