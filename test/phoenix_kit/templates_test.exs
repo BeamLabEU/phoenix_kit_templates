@@ -32,8 +32,8 @@ defmodule PhoenixKit.TemplatesTest do
     end
 
     test "a part the caller did not supply renders as nil" do
-      # Core's auth emails ship text-only, so an absent :html is the normal
-      # case rather than a missing value.
+      # `html` is optional: a template with only subject and text is valid, so
+      # an absent :html is a value (nil), not an error.
       assert %{html: nil} = Templates.render("new_login_alert", defaults(), %{})
     end
   end
@@ -68,6 +68,13 @@ defmodule PhoenixKit.TemplatesTest do
       assert Templates.render("new_login_alert", defaults(), %{"user_email" => "a@b.c"},
                paths: [root]
              ).html == "<p>a@b.c</p>"
+    end
+
+    test "a reserved underscore name renders like any other", %{tmp_dir: root} do
+      write(root, "_layout", "html.html", "<main>{{{content}}}</main>")
+
+      assert %{html: "<main><b>hi</b></main>", subject: nil, text: nil} =
+               Templates.render("_layout", %{}, %{"content" => "<b>hi</b>"}, paths: [root])
     end
   end
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.1 - 2026-10-01
+
+### Added
+
+- **A template name may start with one underscore** (`_layout`). Such names are
+  reserved for shared parts that the caller assembles around a message; this
+  package only finds the files, it wraps nothing. Names are now matched against
+  `\A_?[a-z0-9][a-z0-9_\-]*\z`, so `__x`, `_`, `_-x` and anything containing
+  `.` or `/` still resolve to no override and mint no cache entry. Ordinary
+  names should not start with an underscore, but that is a convention the
+  package does not enforce.
+  ([#2](https://github.com/BeamLabEU/phoenix_kit_templates/pull/2))
+
+### Changed
+
+- The README and moduledocs no longer say core's auth emails are text-only. A
+  template with no `html` is valid, and what a caller does without one is the
+  caller's decision.
+
 ## 0.2.0 - 2026-09-23
 
 ### Breaking
