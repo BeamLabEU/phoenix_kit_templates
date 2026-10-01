@@ -2,6 +2,7 @@ defmodule PhoenixKit.TemplatesTest do
   use ExUnit.Case, async: true
 
   alias PhoenixKit.Templates
+  alias PhoenixKit.Templates.Overrides
 
   @moduletag :tmp_dir
 
@@ -152,6 +153,18 @@ defmodule PhoenixKit.TemplatesTest do
                "Hi A Bcc: x"
     end
 
+    test "leading whitespace and line breaks are dropped", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "\n  New login\n")
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject == "New login"
+      assert Templates.render("alert", %{subject: " \r\nHi"}, %{}).subject == "Hi"
+    end
+
+    test "a leading byte-order mark is dropped", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "\u{FEFF}New login\n")
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject == "New login"
+      assert Templates.render("alert", %{subject: "\u{FEFF} Hi"}, %{}).subject == "Hi"
+    end
+
     test "other parts keep their trailing newline", %{tmp_dir: root} do
       write(root, "alert", "text.txt", "Body\nline\n")
       assert Templates.render("alert", %{}, %{}, paths: [root]).text == "Body\nline\n"
@@ -164,8 +177,8 @@ defmodule PhoenixKit.TemplatesTest do
 
   describe "render/4 markdown and layout parts" do
     test "always returns the five keys" do
-      assert rendered = Templates.render("alert", %{}, %{})
-      assert Map.keys(rendered) |> Enum.sort() == [:html, :layout, :markdown, :subject, :text]
+      rendered = Templates.render("alert", %{}, %{})
+      assert Enum.sort(Map.keys(rendered)) == [:html, :layout, :markdown, :subject, :text]
     end
 
     test "markdown is returned verbatim from a file, unsubstituted", %{tmp_dir: root} do
@@ -200,6 +213,27 @@ defmodule PhoenixKit.TemplatesTest do
                "billing"
 
       assert Templates.render("invoice", %{layout: " {{g}}\n"}, %{"g" => "x"}).layout == "{{g}}"
+    end
+
+    test "layout ignores a locale-specific file", %{tmp_dir: root} do
+      write(root, "invoice", "layout.de.txt", "de-group")
+      assert Templates.render("invoice", %{}, %{}, paths: [root], locale: "de").layout == nil
+
+      # Absence is cached, so drop it before the file appears.
+      Overrides.reset_cache([root])
+      write(root, "invoice", "layout.txt", "billing\n")
+
+      assert Templates.render("invoice", %{}, %{}, paths: [root], locale: "de").layout ==
+               "billing"
+
+      assert Templates.sources("invoice", %{}, paths: [root], locale: "de").layout ==
+               {:file, Path.join([root, "invoice", "layout.txt"])}
+    end
+
+    test "missing_variables/4 never reports layout", %{tmp_dir: root} do
+      write(root, "invoice", "layout.txt", "{{group}}")
+      assert Templates.missing_variables("invoice", %{layout: "{{x}}"}, %{}, paths: [root]) == %{}
+      assert Templates.missing_variables("invoice", %{layout: "{{x}}"}, %{}) == %{}
     end
 
     test "a template with no markdown or layout has nil for both" do

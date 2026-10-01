@@ -25,8 +25,12 @@ defmodule PhoenixKit.Templates.Overrides do
   `subject`, `text` and `layout` are `.txt`; `html` is `.html`; `markdown` is
   `.md`. A root is typically
   `Application.app_dir(:my_app, "priv/phoenix_kit_templates")`, but this module
-  takes roots as an argument and reads no configuration of its own — it must not
-  know which application is using it.
+  takes roots as an argument and reads no configuration of its own — it must
+  not know which application is using it.
+
+  `layout` is the one part with no locale: it names a layout group, which is
+  chosen per message rather than per language, so only `layout.txt` is ever
+  read and `layout.<locale>.txt` is ignored.
 
   Lookup runs most- to least-specific and stops at the first file that exists:
 
@@ -118,7 +122,7 @@ defmodule PhoenixKit.Templates.Overrides do
           {Path.t(), String.t()} | nil
   def locate(roots, name, part, locale) when is_list(roots) do
     if valid_request?(name, part) do
-      cached_lookup(roots, name, part, normalize_locale(locale))
+      cached_lookup(roots, name, part, normalize_locale(part, locale))
     end
   end
 
@@ -134,7 +138,7 @@ defmodule PhoenixKit.Templates.Overrides do
   """
   @spec reset_cache([Path.t()] | :all) :: :ok
   def reset_cache(roots \\ :all) do
-    for {{__MODULE__, cached_roots, _name, _part, _locale} = key, _value} <-
+    for {{__MODULE__, :located, cached_roots, _name, _part, _locale} = key, _value} <-
           :persistent_term.get(),
         roots == :all or Enum.any?(cached_roots, &(&1 in roots)) do
       :persistent_term.erase(key)
@@ -150,23 +154,29 @@ defmodule PhoenixKit.Templates.Overrides do
     is_binary(name) and Map.has_key?(@parts, part) and Regex.match?(@name_pattern, name)
   end
 
+  # `layout` is locale-less, so it normalizes to `nil` like an unparseable one.
   # An unparseable locale contributes no candidates of its own rather than being
   # interpolated into a path, so it resolves exactly as `nil` does — and shares
   # `nil`'s cache entry.
-  defp normalize_locale(locale) when is_binary(locale) do
+  defp normalize_locale(:layout, _locale), do: nil
+
+  defp normalize_locale(_part, locale) when is_binary(locale) do
     if Regex.match?(@locale_pattern, locale), do: locale
   end
 
-  defp normalize_locale(_locale), do: nil
+  defp normalize_locale(_part, _locale), do: nil
 
   defp cached_lookup(roots, name, part, locale) do
-    key = {__MODULE__, roots, name, part, locale}
+    # The tag keeps a cache entry written by 0.2.1 (a bare binary under the
+    # untagged key) from being misread as a `{path, content}` pair after a
+    # live code reload.
+    key = {__MODULE__, :located, roots, name, part, locale}
 
     case :persistent_term.get(key, :miss) do
       :miss ->
-        content = lookup(roots, name, part, locale)
-        :persistent_term.put(key, content)
-        content
+        found = lookup(roots, name, part, locale)
+        :persistent_term.put(key, found)
+        found
 
       cached ->
         cached

@@ -31,10 +31,11 @@ defmodule PhoenixKit.Templates.Substitution do
   `{{{variable}}}` (triple braces) is the escaping opt-out, for a variable that
   already holds rendered HTML — billing's `line_items_html` is the motivating
   case. It is **always substituted raw**, regardless of the `:escape` option,
-  in every part. In `subject` and `text` — which are never escaped, being
+  in each of the parts `render/4` substitutes (`subject`, `text`, `html`;
+  `markdown` and `layout` are not substituted by `render/4`). In `subject` and `text` — which are never escaped, being
   plain text — `{{{variable}}}` and `{{variable}}` are therefore identical:
   the triple-brace spelling exists so the same template content is valid
-  pasted into any of the three parts, not because those parts have their own
+  pasted into any of the three substituted parts, not because those parts have their own
   escaping to opt out of.
 
   `substitute/2` calls `substitute/3` with `escape: false`, i.e. plain

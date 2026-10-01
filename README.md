@@ -73,6 +73,25 @@ reads the same set:
 `render/4` returns all five keys: `%{subject:, text:, html:, markdown:, layout:}`.
 A part with neither an override nor a default is `nil`.
 
+Given that tree, a German recipient resolves to `subject.de.txt` + `text.de.txt`;
+an Italian one falls through to `subject.txt` + `text.txt`. A host that wrote
+only `text.txt` still gets the package's translated subject in every language —
+parts are looked up independently.
+
+A directory rather than flat files because one template is up to five parts
+times however many locales a host translates. Flat, they would interleave with
+every other template's files and you would be reading filename prefixes to tell
+them apart; grouped, a template is one folder to copy, diff or delete.
+
+`html` is genuinely optional, not nominally so: a template with only `subject`
+and `text` is valid. What a caller does when there is no `html` — send plain
+text, derive an HTML body, wrap it in a layout — is the caller's decision, not
+this package's.
+
+Overrides live in the host application, which compiles separately from this
+package — so they are read at runtime and cached in `:persistent_term`, the
+absence of a file included.
+
 ### `markdown` and `layout` are found, not interpreted
 
 This package renders no Markdown and selects no layout; it only finds the files.
@@ -81,10 +100,13 @@ They differ from the other parts in what `render/4` does with them:
 - `markdown` is returned **exactly as read** (or as passed in `defaults`), with
   **no placeholder substitution**. A Markdown renderer percent-encodes
   `{{url}}` inside a link target (`%7B%7Burl%7D%7D`), so the caller renders the
-  Markdown first and substitutes afterwards. `missing_variables/4` still counts
-  a `markdown` part's placeholders.
-- `layout` holds the *name* of a layout group (e.g. `billing`). It is returned
-  trimmed, without substitution.
+  Markdown first and substitutes afterwards. `missing_variables/4` still
+  reports the placeholders of a `markdown` part that the variables do not bind
+  — those the caller is going to substitute.
+- `layout` holds the *name* of a layout group (e.g. `billing`) and is
+  **locale-less**: the group is chosen per message, not per language, so only
+  `layout.txt` is read and a `layout.<locale>.txt` is ignored. It is returned
+  trimmed, without substitution, and `missing_variables/4` never reports it.
 
 ### Where a part came from
 
@@ -104,30 +126,11 @@ but it returns `{path, content}` (or `nil`) — `read/4` is built on it.
 
 ### `subject` is a single line
 
-`render/4` returns `subject` without trailing whitespace or line breaks — the
-final newline an editor adds to `subject.txt` is not part of the subject — and
-replaces any interior `\r`/`\n` (a wrapped file, or a substituted value) with a
-single space. This holds for files and `defaults` alike; the other parts are
-returned as they are.
-
-Given that tree, a German recipient resolves to `subject.de.txt` + `text.de.txt`;
-an Italian one falls through to `subject.txt` + `text.txt`. A host that wrote
-only `text.txt` still gets the package's translated subject in every language —
-parts are looked up independently.
-
-A directory rather than flat files because one template is up to three parts
-times however many locales a host translates. Flat, they would interleave with
-every other template's files and you would be reading filename prefixes to tell
-them apart; grouped, a template is one folder to copy, diff or delete.
-
-`html` is genuinely optional, not nominally so: a template with only `subject`
-and `text` is valid. What a caller does when there is no `html` — send plain
-text, derive an HTML body, wrap it in a layout — is the caller's decision, not
-this package's.
-
-Overrides live in the host application, which compiles separately from this
-package — so they are read at runtime and cached in `:persistent_term`, the
-absence of a file included.
+`render/4` returns `subject` trimmed on both sides (and without a leading
+byte-order mark) — the final newline an editor adds to `subject.txt` is not
+part of the subject — and replaces any interior `\r`/`\n` (a wrapped file, or
+a substituted value) with a single space. This holds for files and `defaults`
+alike; `text`, `html` and `markdown` keep their line breaks.
 
 ### Reserved names: a leading underscore
 
@@ -183,8 +186,8 @@ that want it to be an error ask `missing_variables/4` up front.
 data, not as markup to preserve, so a value that already contains `&amp;` is
 escaped again.
 
-`{{{variable}}}` (triple braces) substitutes **raw**, in every part, regardless
-of escaping — the opt-out for a variable that already holds rendered HTML, such
+`{{{variable}}}` (triple braces) substitutes **raw** in `subject`, `text` and
+`html`, regardless of escaping — the opt-out for a variable that already holds rendered HTML, such
 as a pre-built line-items table:
 
 ```elixir
@@ -197,7 +200,8 @@ PhoenixKit.Templates.render(
 
 In `subject` and `text`, `{{{variable}}}` and `{{variable}}` are identical —
 both are raw — so the same template content is valid pasted into any of the
-three parts.
+three substituted parts (`subject`, `text`, `html`). `markdown` and `layout`
+are returned without substitution — see above.
 
 > #### Escaping `html` is a breaking change from 0.1.x {: .warning}
 >

@@ -85,23 +85,51 @@ defmodule PhoenixKit.Templates.OverridesTest do
       write(second, "alert", "text.de.txt", "second-de")
       write(second, "alert", "text.de-AT.txt", "second-de-at")
 
-      for locale <- [nil, "de", "de-AT", "fr", "de-CH", "junk!"],
-          roots <- [[first, second], [second, first], [second]] do
-        located = Overrides.locate(roots, "alert", :text, locale)
-        assert elem_or_nil(located, 1) == Overrides.read(roots, "alert", :text, locale)
+      f_plain = {Path.join([first, "alert", "text.txt"]), "plain"}
+      s_de = {Path.join([second, "alert", "text.de.txt"]), "second-de"}
+      s_de_at = {Path.join([second, "alert", "text.de-AT.txt"]), "second-de-at"}
+
+      # {roots, locale, expected}: an earlier root shadows a later one even
+      # when the later one has the more specific locale.
+      cases = [
+        {[first, second], nil, f_plain},
+        {[first, second], "de", f_plain},
+        {[first, second], "de-AT", f_plain},
+        {[second, first], nil, f_plain},
+        {[second, first], "de", s_de},
+        {[second, first], "de-AT", s_de_at},
+        {[second, first], "de-CH", s_de},
+        {[second, first], "fr", f_plain},
+        {[second, first], "junk!", f_plain},
+        {[second], "de-AT", s_de_at},
+        {[second], "de-CH", s_de},
+        {[second], "fr", nil},
+        {[second], nil, nil}
+      ]
+
+      for {roots, locale, expected} <- cases do
+        assert Overrides.locate(roots, "alert", :text, locale) == expected,
+               "locate #{inspect(roots)} #{inspect(locale)}"
+
+        expected_content = expected && elem(expected, 1)
+        assert Overrides.read(roots, "alert", :text, locale) == expected_content
       end
 
-      assert Overrides.locate([first, second], "alert", :text, "de-AT") ==
-               {Path.join([first, "alert", "text.txt"]), "plain"}
-
-      assert Overrides.locate([second, first], "alert", :text, "de-AT") ==
-               {Path.join([second, "alert", "text.de-AT.txt"]), "second-de-at"}
-
-      assert Overrides.locate([second, first], "alert", :text, "de-CH") ==
-               {Path.join([second, "alert", "text.de.txt"]), "second-de"}
-
-      assert Overrides.locate([second], "alert", :text, "fr") == nil
       assert Overrides.locate([second], "alert", :html, nil) == nil
+    end
+
+    test "layout is locale-less: layout.<locale>.txt is ignored", %{tmp_dir: root} do
+      write(root, "alert", "layout.de.txt", "de-group")
+      assert Overrides.locate([root], "alert", :layout, "de") == nil
+      assert Overrides.read([root], "alert", :layout, "de") == nil
+
+      # Absence is cached, so drop it before the file appears.
+      Overrides.reset_cache([root])
+      write(root, "alert", "layout.txt", "billing")
+      path = Path.join([root, "alert", "layout.txt"])
+      assert Overrides.locate([root], "alert", :layout, "de") == {path, "billing"}
+      assert Overrides.locate([root], "alert", :layout, "de-AT") == {path, "billing"}
+      assert Overrides.read([root], "alert", :layout, nil) == "billing"
     end
 
     test "locate/4 finds an empty file", %{tmp_dir: root} do
@@ -118,8 +146,10 @@ defmodule PhoenixKit.Templates.OverridesTest do
       assert Overrides.locate([root], "__x", :text, nil) == nil
       assert Overrides.locate([root], "alert", :bogus, nil) == nil
       assert Overrides.locate([root], "alert", :text, "../../x") == nil
+
+      # Exactly one entry: the valid name and part, its garbage locale having
+      # collapsed into the nil-locale entry.
       assert map_size(cache_entries(root)) == before + 1
-      # only the normalized nil-locale lookup for "alert" was cached
     end
 
     test "an earlier root shadows a later one", %{tmp_dir: root} do
@@ -272,14 +302,13 @@ defmodule PhoenixKit.Templates.OverridesTest do
   end
 
   defp cache_keys(root) do
-    for {{Overrides, roots, _, _, _} = key, _} <- :persistent_term.get(), root in roots, do: key
+    for {{Overrides, :located, roots, _, _, _} = key, _} <- :persistent_term.get(),
+        root in roots,
+        do: key
   end
 
-  defp elem_or_nil(nil, _index), do: nil
-  defp elem_or_nil(tuple, index), do: elem(tuple, index)
-
   defp cache_entries(root) do
-    for {{Overrides, roots, _, _, _} = key, value} <- :persistent_term.get(),
+    for {{Overrides, :located, roots, _, _, _} = key, value} <- :persistent_term.get(),
         root in roots,
         into: %{},
         do: {key, value}
