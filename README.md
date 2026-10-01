@@ -86,6 +86,22 @@ They differ from the other parts in what `render/4` does with them:
 - `layout` holds the *name* of a layout group (e.g. `billing`). It is returned
   trimmed, without substitution.
 
+### Where a part came from
+
+For a preview screen, `PhoenixKit.Templates.sources/3` reports the origin of
+each part on the same resolution `render/4` uses, so it cannot disagree with
+what would be sent:
+
+```elixir
+PhoenixKit.Templates.sources("register", defaults, locale: "ru", paths: paths)
+#=> %{subject: :default, text: {:file, "/app/priv/phoenix_kit_templates/register/text.txt"}}
+```
+
+`{:file, path}` means a host file was found (an empty file counts), `:default`
+means the caller's non-`nil` default was used, and a missing key means the part
+does not exist. `Overrides.locate/4` is the lower-level form: like `read/4`,
+but it returns `{path, content}` (or `nil`) — `read/4` is built on it.
+
 ### `subject` is a single line
 
 `render/4` returns `subject` without trailing whitespace or line breaks — the

@@ -78,6 +78,50 @@ defmodule PhoenixKit.Templates.OverridesTest do
       assert Enum.sort(Overrides.parts()) == [:html, :layout, :markdown, :subject, :text]
     end
 
+    test "locate/4 returns the path read/4 reads, through every fallback", %{tmp_dir: root} do
+      first = Path.join(root, "first")
+      second = Path.join(root, "second")
+      write(first, "alert", "text.txt", "plain")
+      write(second, "alert", "text.de.txt", "second-de")
+      write(second, "alert", "text.de-AT.txt", "second-de-at")
+
+      for locale <- [nil, "de", "de-AT", "fr", "de-CH", "junk!"],
+          roots <- [[first, second], [second, first], [second]] do
+        located = Overrides.locate(roots, "alert", :text, locale)
+        assert elem_or_nil(located, 1) == Overrides.read(roots, "alert", :text, locale)
+      end
+
+      assert Overrides.locate([first, second], "alert", :text, "de-AT") ==
+               {Path.join([first, "alert", "text.txt"]), "plain"}
+
+      assert Overrides.locate([second, first], "alert", :text, "de-AT") ==
+               {Path.join([second, "alert", "text.de-AT.txt"]), "second-de-at"}
+
+      assert Overrides.locate([second, first], "alert", :text, "de-CH") ==
+               {Path.join([second, "alert", "text.de.txt"]), "second-de"}
+
+      assert Overrides.locate([second], "alert", :text, "fr") == nil
+      assert Overrides.locate([second], "alert", :html, nil) == nil
+    end
+
+    test "locate/4 finds an empty file", %{tmp_dir: root} do
+      write(root, "alert", "text.txt", "")
+
+      assert Overrides.locate([root], "alert", :text, nil) ==
+               {Path.join([root, "alert", "text.txt"]), ""}
+    end
+
+    test "locate/4 junk names and locales mint no cache entries", %{tmp_dir: root} do
+      before = map_size(cache_entries(root))
+
+      assert Overrides.locate([root], "../etc", :text, nil) == nil
+      assert Overrides.locate([root], "__x", :text, nil) == nil
+      assert Overrides.locate([root], "alert", :bogus, nil) == nil
+      assert Overrides.locate([root], "alert", :text, "../../x") == nil
+      assert map_size(cache_entries(root)) == before + 1
+      # only the normalized nil-locale lookup for "alert" was cached
+    end
+
     test "an earlier root shadows a later one", %{tmp_dir: root} do
       first = Path.join(root, "first")
       second = Path.join(root, "second")
@@ -229,5 +273,15 @@ defmodule PhoenixKit.Templates.OverridesTest do
 
   defp cache_keys(root) do
     for {{Overrides, roots, _, _, _} = key, _} <- :persistent_term.get(), root in roots, do: key
+  end
+
+  defp elem_or_nil(nil, _index), do: nil
+  defp elem_or_nil(tuple, index), do: elem(tuple, index)
+
+  defp cache_entries(root) do
+    for {{Overrides, roots, _, _, _} = key, value} <- :persistent_term.get(),
+        root in roots,
+        into: %{},
+        do: {key, value}
   end
 end

@@ -214,6 +214,43 @@ defmodule PhoenixKit.TemplatesTest do
     end
   end
 
+  describe "sources/3" do
+    test "reports file, default, and absent parts", %{tmp_dir: root} do
+      write(root, "alert", "text.txt", "from file")
+      write(root, "alert", "subject.de.txt", "de subject")
+
+      defaults = %{subject: "default subject", text: "default text", html: nil}
+
+      assert Templates.sources("alert", defaults, paths: [root], locale: "de") == %{
+               subject: {:file, Path.join([root, "alert", "subject.de.txt"])},
+               text: {:file, Path.join([root, "alert", "text.txt"])}
+             }
+    end
+
+    test "a default without a file is :default; a nil default has no key" do
+      assert Templates.sources("alert", %{subject: "s", text: nil}) == %{subject: :default}
+      assert Templates.sources("alert", %{}) == %{}
+    end
+
+    test "an empty file is still reported as a file", %{tmp_dir: root} do
+      write(root, "alert", "html.html", "")
+
+      assert Templates.sources("alert", %{html: "<p>x</p>"}, paths: [root]) ==
+               %{html: {:file, Path.join([root, "alert", "html.html"])}}
+    end
+
+    test "covers markdown and layout", %{tmp_dir: root} do
+      write(root, "alert", "markdown.md", "# x")
+      write(root, "alert", "layout.txt", "billing")
+
+      assert %{markdown: {:file, _}, layout: {:file, _}} =
+               Templates.sources("alert", %{}, paths: [root])
+
+      assert Templates.sources("alert", %{markdown: "m", layout: "l"}) ==
+               %{markdown: :default, layout: :default}
+    end
+  end
+
   describe "missing_variables/4" do
     test "reports unbound placeholders per part, omitting clean ones" do
       assert Templates.missing_variables("new_login_alert", defaults(), %{

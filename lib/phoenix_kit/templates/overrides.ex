@@ -41,6 +41,10 @@ defmodule PhoenixKit.Templates.Overrides do
   `text.txt`. A part with no file at all resolves to `nil`, and the caller falls
   back to its own default.
 
+  `locate/4` is `read/4` that also returns the path of the file it read —
+  `{path, content}` — for callers that need to say where content came from.
+  `read/4` is built on it, so the two always agree.
+
   ## Reserved names
 
   A name may start with **one** underscore (`_layout`). Such names are
@@ -93,6 +97,26 @@ defmodule PhoenixKit.Templates.Overrides do
   """
   @spec read([Path.t()], String.t(), part(), String.t() | nil) :: String.t() | nil
   def read(roots, name, part, locale) when is_list(roots) do
+    case locate(roots, name, part, locale) do
+      {_path, content} -> content
+      nil -> nil
+    end
+  end
+
+  @doc """
+  Like `read/4`, but also says *which file* the content came from:
+  `{path, content}`, or `nil` when there is no override.
+
+  Validation, candidate order (locale → base language → locale-less, roots in
+  order) and the cache are exactly `read/4`'s — `read/4` is implemented on top
+  of this function, so the two can never disagree about which file wins. The
+  path is the one that was read (a root joined with the name and file), as a
+  preview screen would show it. An empty file is still found: whether empty
+  means absent is the caller's decision.
+  """
+  @spec locate([Path.t()], String.t(), part(), String.t() | nil) ::
+          {Path.t(), String.t()} | nil
+  def locate(roots, name, part, locale) when is_list(roots) do
     if valid_request?(name, part) do
       cached_lookup(roots, name, part, normalize_locale(locale))
     end
@@ -180,7 +204,7 @@ defmodule PhoenixKit.Templates.Overrides do
 
   defp read_file(path) do
     case File.read(path) do
-      {:ok, content} -> content
+      {:ok, content} -> {path, content}
       {:error, _reason} -> nil
     end
   end

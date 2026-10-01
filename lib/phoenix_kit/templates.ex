@@ -112,6 +112,13 @@ defmodule PhoenixKit.Templates do
       (`billing`). It is returned trimmed (`String.trim/1`), without
       substitution.
 
+  ### Where a part came from
+
+  `sources/3` answers "which file, if any, supplied each part?" with
+  `{:file, path}` / `:default`, on the same resolution as `render/4`. It exists
+  for preview screens. `PhoenixKit.Templates.Overrides.locate/4` is the
+  lower-level form that also returns the file's content.
+
   ### `subject` is one line
 
   A subject becomes a single header line, so `render/4` returns it without
@@ -200,6 +207,33 @@ defmodule PhoenixKit.Templates do
   end
 
   @doc """
+  Where each part of `name` would come from, for a preview screen.
+
+  Returns `%{part => {:file, path} | :default}`:
+
+    * `{:file, path}` — a host override file was found, `path` being the file
+      read. An empty file counts: whether empty means absent is the caller's
+      decision.
+    * `:default` — no file, and `defaults` carries a non-`nil` value for it.
+    * no key — neither exists; `render/4` yields `nil` for that part.
+
+  Built on the same resolution as `render/4` and `missing_variables/4`, so the
+  reported source cannot differ from the content that would be sent. Takes the
+  same `:locale` and `:paths` options.
+  """
+  @spec sources(String.t(), defaults(), keyword()) ::
+          %{optional(Overrides.part()) => {:file, Path.t()} | :default}
+  def sources(name, defaults, opts \\ []) when is_binary(name) do
+    Enum.reduce(Overrides.parts(), %{}, fn part, acc ->
+      case {locate(name, part, opts), Map.get(defaults, part)} do
+        {{path, _content}, _default} -> Map.put(acc, part, {:file, path})
+        {nil, nil} -> acc
+        {nil, _default} -> Map.put(acc, part, :default)
+      end
+    end)
+  end
+
+  @doc """
   Placeholder names that `render/4` would leave unbound, keyed by part.
 
   Parts that would render cleanly are omitted, so an empty map means the render
@@ -221,6 +255,13 @@ defmodule PhoenixKit.Templates do
   # The one resolution both functions share, so the check can never inspect
   # different content from what the render would send.
   defp resolve(name, part, defaults, opts) do
-    Overrides.read(opts[:paths] || [], name, part, opts[:locale]) || Map.get(defaults, part)
+    case locate(name, part, opts) do
+      {_path, content} -> content
+      nil -> Map.get(defaults, part)
+    end
+  end
+
+  defp locate(name, part, opts) do
+    Overrides.locate(opts[:paths] || [], name, part, opts[:locale])
   end
 end
