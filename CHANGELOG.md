@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Subject normalization no longer takes quadratic time on long whitespace runs
+  without a line break. Unicode whitespace around a `\r`/`\n` is now collapsed
+  along with the break, matching the documented single-space behavior.
+
+### Documentation
+
+- Corrected the Markdown substitution guidance: rendering a link target such as
+  `{{url}}` can percent-encode its braces, so callers substituting after Markdown
+  rendering must preserve and restore placeholders before HTML substitution.
+
 ## 0.2.2 - 2026-10-01
 
 ### Added

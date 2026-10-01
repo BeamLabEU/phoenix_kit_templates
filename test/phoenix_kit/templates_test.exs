@@ -172,6 +172,24 @@ defmodule PhoenixKit.TemplatesTest do
                "New login to your account"
     end
 
+    test "Unicode whitespace around a line break collapses too", %{tmp_dir: root} do
+      subject = "New login\u{00A0}\r\n\u{2003}to your account"
+      write(root, "alert", "subject.txt", subject)
+
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject ==
+               "New login to your account"
+
+      assert Templates.render("alert", %{subject: "Hi {{name}}"}, %{name: subject}).subject ==
+               "Hi New login to your account"
+    end
+
+    @tag timeout: 5_000
+    test "long whitespace runs without a line break are preserved promptly" do
+      subject = "A" <> String.duplicate(" ", 50_000) <> "B"
+
+      assert Templates.render("alert", %{subject: subject}).subject == subject
+    end
+
     test "other parts keep their trailing newline", %{tmp_dir: root} do
       write(root, "alert", "text.txt", "Body\nline\n")
       assert Templates.render("alert", %{}, %{}, paths: [root]).text == "Body\nline\n"

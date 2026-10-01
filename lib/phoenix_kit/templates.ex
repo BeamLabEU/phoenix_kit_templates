@@ -106,11 +106,14 @@ defmodule PhoenixKit.Templates do
     * `markdown` is returned **exactly** as `PhoenixKit.Templates.Overrides.read/4` (or `defaults`)
       supplied it — **no placeholder substitution**. Placeholders such as
       `[Confirm]({{confirmation_url}})` are still in the string. The caller
-      renders the Markdown first and substitutes afterwards, because a
-      Markdown renderer percent-encodes `{{url}}` inside a link target and
-      would break a value substituted beforehand. `missing_variables/4`
-      still reports a `markdown` part's unbound placeholders — the ones the
-      caller will substitute.
+      owns the rendering and substitution pipeline. If it substitutes after
+      rendering, it must preserve placeholders through that step: a Markdown
+      renderer may percent-encode `{{url}}` inside a link target as
+      `%7B%7Burl%7D%7D`, which `Substitution.substitute/3` will not recognize.
+      For example, the caller can protect placeholders with renderer-safe
+      tokens and restore them before HTML-escaped substitution.
+      `missing_variables/4` still reports a `markdown` part's unbound
+      placeholders — the ones the caller will substitute.
     * `layout` is a one-line file whose content names a layout group
       (`billing`). It is **locale-less** — the group is chosen per message,
       not per language — so only `layout.txt` is read and a
@@ -139,7 +142,7 @@ defmodule PhoenixKit.Templates do
   alias PhoenixKit.Templates.Overrides
   alias PhoenixKit.Templates.Substitution
 
-  @typedoc "Rendered content, ready for a channel to deliver."
+  @typedoc "Resolved parts; Markdown rendering and layout selection belong to the caller."
   @type rendered :: %{
           subject: String.t() | nil,
           text: String.t() | nil,
@@ -193,8 +196,8 @@ defmodule PhoenixKit.Templates do
   end
 
   # Per-part post-processing of the resolved content. `markdown` is handed back
-  # untouched: the caller substitutes after rendering it, because a Markdown
-  # renderer percent-encodes `{{url}}` in a link target.
+  # untouched: the caller owns the Markdown rendering/substitution pipeline,
+  # including preserving placeholders through the Markdown renderer.
   defp finish(content, :markdown, _variables), do: content
   defp finish(content, :layout, _variables) when is_binary(content), do: trim_bom(content)
   defp finish(content, :layout, _variables), do: content
@@ -213,7 +216,13 @@ defmodule PhoenixKit.Templates do
   defp single_line(nil), do: nil
 
   defp single_line(subject) do
-    subject |> trim_bom() |> then(&Regex.replace(~r/\s*[\r\n]\s*/, &1, " "))
+    subject = trim_bom(subject)
+
+    # Scan each run once. A greedy whitespace prefix followed by a required
+    # newline retries at every space if no newline exists, taking quadratic time.
+    Regex.replace(~r/\s+/u, subject, fn whitespace ->
+      if String.contains?(whitespace, ["\r", "\n"]), do: " ", else: whitespace
+    end)
   end
 
   # An editor on some platforms prepends a BOM; it is not whitespace to

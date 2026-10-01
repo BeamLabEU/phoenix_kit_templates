@@ -98,11 +98,15 @@ This package renders no Markdown and selects no layout; it only finds the files.
 They differ from the other parts in what `render/4` does with them:
 
 - `markdown` is returned **exactly as read** (or as passed in `defaults`), with
-  **no placeholder substitution**. A Markdown renderer percent-encodes
-  `{{url}}` inside a link target (`%7B%7Burl%7D%7D`), so the caller renders the
-  Markdown first and substitutes afterwards. `missing_variables/4` still
-  reports the placeholders of a `markdown` part that the variables do not bind
-  — those the caller is going to substitute.
+  **no placeholder substitution**. The caller owns Markdown rendering and
+  substitution. When substituting after rendering, preserve placeholders through
+  the renderer: `[Confirm]({{url}})` may become
+  `<a href="%7B%7Burl%7D%7D">Confirm</a>`, which
+  `Substitution.substitute/3` cannot substitute. One approach is to protect
+  placeholders with renderer-safe tokens and restore them before substituting
+  into the HTML with `escape: true`. `missing_variables/4` still reports the
+  placeholders of a `markdown` part that the variables do not bind — those the
+  caller is going to substitute.
 - `layout` holds the *name* of a layout group (e.g. `billing`) and is
   **locale-less**: the group is chosen per message, not per language, so only
   `layout.txt` is read and a `layout.<locale>.txt` is ignored. It is returned
@@ -130,8 +134,9 @@ but it returns `{path, content}` (or `nil`) — `read/4` is built on it.
 `render/4` returns `subject` trimmed on both sides (and without a leading
 byte-order mark) — the final newline an editor adds to `subject.txt` is not
 part of the subject — and replaces any interior `\r`/`\n` (a wrapped file, or
-a substituted value), with the whitespace around it, with a single space. This holds for files and `defaults`
-alike; `text`, `html` and `markdown` keep their line breaks.
+a substituted value), with the whitespace around it, with a single space. This
+holds for files and `defaults` alike; `text`, `html` and `markdown` keep their
+line breaks.
 
 ### Reserved names: a leading underscore
 
