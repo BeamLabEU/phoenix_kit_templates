@@ -22,7 +22,8 @@ defmodule PhoenixKit.Templates.Overrides do
           ├── subject.de.txt
           └── text.txt
 
-  `subject` and `text` are `.txt`; `html` is `.html`. A root is typically
+  `subject`, `text` and `layout` are `.txt`; `html` is `.html`; `markdown` is
+  `.md`. A root is typically
   `Application.app_dir(:my_app, "priv/phoenix_kit_templates")`, but this module
   takes roots as an argument and reads no configuration of its own — it must not
   know which application is using it.
@@ -70,13 +71,13 @@ defmodule PhoenixKit.Templates.Overrides do
   `../../../etc/passwd` resolves to no override rather than to a file.
   """
 
-  @parts %{subject: "txt", text: "txt", html: "html"}
+  @parts %{subject: "txt", text: "txt", html: "html", markdown: "md", layout: "txt"}
 
   @name_pattern ~r/\A_?[a-z0-9][a-z0-9_\-]*\z/
   @locale_pattern ~r/\A[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,3}\z/
 
   @typedoc "Which part of a template to look for."
-  @type part :: :subject | :text | :html
+  @type part :: :subject | :text | :html | :markdown | :layout
 
   @doc "The parts an override file can supply."
   @spec parts() :: [part()]

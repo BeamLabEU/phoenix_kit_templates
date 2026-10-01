@@ -12,7 +12,7 @@ PhoenixKit.Templates.render(
   locale: "uk",
   paths: [Application.app_dir(:my_app, "priv/phoenix_kit_templates")]
 )
-#=> %{subject: "…", text: "…", html: nil}
+#=> %{subject: "…", text: "…", html: nil, markdown: nil, layout: nil}
 ```
 
 ## Two layers
@@ -54,17 +54,45 @@ priv/phoenix_kit_templates/     <- a root, passed as :paths
     ├── subject.de.txt          <- <part>.<locale>.<ext>
     ├── text.txt
     ├── text.de.txt
-    └── html.html
+    ├── html.html
+    ├── markdown.md
+    └── layout.txt
 ```
 
 Parts are named for what they are rather than for email, because every channel
-reads the same three:
+reads the same set:
 
 | part | file | read by |
 |---|---|---|
 | `subject` | `subject[.locale].txt` | email subject line, push title |
 | `text` | `text[.locale].txt` | email body, push body, Telegram, SMS, in-app inbox |
 | `html` | `html[.locale].html` | email only — optional |
+| `markdown` | `markdown[.locale].md` | email only — optional, an alternative to `html` |
+| `layout` | `layout.txt` | email only — optional, names a layout group |
+
+`render/4` returns all five keys: `%{subject:, text:, html:, markdown:, layout:}`.
+A part with neither an override nor a default is `nil`.
+
+### `markdown` and `layout` are found, not interpreted
+
+This package renders no Markdown and selects no layout; it only finds the files.
+They differ from the other parts in what `render/4` does with them:
+
+- `markdown` is returned **exactly as read** (or as passed in `defaults`), with
+  **no placeholder substitution**. A Markdown renderer percent-encodes
+  `{{url}}` inside a link target (`%7B%7Burl%7D%7D`), so the caller renders the
+  Markdown first and substitutes afterwards. `missing_variables/4` still counts
+  a `markdown` part's placeholders.
+- `layout` holds the *name* of a layout group (e.g. `billing`). It is returned
+  trimmed, without substitution.
+
+### `subject` is a single line
+
+`render/4` returns `subject` without trailing whitespace or line breaks — the
+final newline an editor adds to `subject.txt` is not part of the subject — and
+replaces any interior `\r`/`\n` (a wrapped file, or a substituted value) with a
+single space. This holds for files and `defaults` alike; the other parts are
+returned as they are.
 
 Given that tree, a German recipient resolves to `subject.de.txt` + `text.de.txt`;
 an Italian one falls through to `subject.txt` + `text.txt`. A host that wrote

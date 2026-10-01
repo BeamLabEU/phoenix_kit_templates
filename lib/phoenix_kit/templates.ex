@@ -34,15 +34,19 @@ defmodule PhoenixKit.Templates do
           ├── subject.de.txt          <- <part>.<locale>.<ext>
           ├── text.txt
           ├── text.de.txt
-          └── html.html
+          ├── html.html
+          ├── markdown.md
+          └── layout.txt
 
   | part | file | used by |
   |---|---|---|
   | `subject` | `subject[.locale].txt` | email subject, push title |
   | `text` | `text[.locale].txt` | every channel |
   | `html` | `html[.locale].html` | email only, optional |
+  | `markdown` | `markdown[.locale].md` | email only, optional — an alternative to `html` |
+  | `layout` | `layout.txt` | email only, optional — names a layout group |
 
-  A directory rather than flat files because one template is up to three parts
+  A directory rather than flat files because one template is up to five parts
   times however many locales a host translates — flat, they would interleave
   with every other template's files and you would be reading filename prefixes
   to tell them apart. Grouped, a template is one folder to copy, diff or delete.
@@ -81,28 +85,63 @@ defmodule PhoenixKit.Templates do
 
   ## Parts
 
-  `subject`, `text` and `html`, named for what they are rather than for email:
-  push uses subject-as-title plus text, Telegram and SMS use text alone, the
-  in-app inbox uses text. `html` is genuinely optional — a template with no
-  `html` is valid, and what a caller does without one is the caller's decision.
+  `subject`, `text`, `html`, `markdown` and `layout`, named for what they are
+  rather than for email: push uses subject-as-title plus text, Telegram and
+  SMS use text alone, the in-app inbox uses text. `html` is genuinely
+  optional — a template with no `html` is valid, and what a caller does
+  without one is the caller's decision.
 
   `html` HTML-escapes a bound `{{variable}}` value; `subject` and `text`,
   being plain text, never do. `{{{variable}}}` (triple braces) is the
   escaping opt-out, substituting raw in every part — see `render/4` and
   `PhoenixKit.Templates.Substitution` for the full syntax.
+
+  ### `markdown` and `layout`: found, not interpreted
+
+  This package only *finds* these two parts; it renders no Markdown and
+  selects no layout. `render/4` treats them differently from the other three:
+
+    * `markdown` is returned **exactly** as `Overrides.read/4` (or `defaults`)
+      supplied it — **no placeholder substitution**. Placeholders such as
+      `[Confirm]({{confirmation_url}})` are still in the string. The caller
+      renders the Markdown first and substitutes afterwards, because a
+      Markdown renderer percent-encodes `{{url}}` inside a link target and
+      would break a value substituted beforehand. `missing_variables/4`
+      still counts a `markdown` part's placeholders as usual.
+    * `layout` is a one-line file whose content names a layout group
+      (`billing`). It is returned trimmed (`String.trim/1`), without
+      substitution.
+
+  ### `subject` is one line
+
+  A subject becomes a single header line, so `render/4` returns it without
+  trailing whitespace or line breaks — the newline most editors append to a
+  file is not part of the subject — and any `\\r`/`\\n` inside it (a wrapped
+  file, or a variable value) becomes a single space. This applies to files
+  and `defaults` alike; the other parts are returned as they are.
   """
 
   alias PhoenixKit.Templates.Overrides
   alias PhoenixKit.Templates.Substitution
 
   @typedoc "Rendered content, ready for a channel to deliver."
-  @type rendered :: %{subject: String.t() | nil, text: String.t() | nil, html: String.t() | nil}
+  @type rendered :: %{
+          subject: String.t() | nil,
+          text: String.t() | nil,
+          html: String.t() | nil,
+          markdown: String.t() | nil,
+          layout: String.t() | nil
+        }
 
   @typedoc "Package-shipped content, already localized by the caller."
   @type defaults :: %{optional(Overrides.part()) => String.t() | nil}
 
   @doc """
-  Renders `name` into `%{subject:, text:, html:}`.
+  Renders `name` into `%{subject:, text:, html:, markdown:, layout:}`.
+
+  The map always carries all five keys; a part with neither override nor
+  default is `nil`. `markdown` and `layout` are not substituted — see
+  "`markdown` and `layout`: found, not interpreted" in the module docs.
 
   ## Options
 
@@ -133,13 +172,31 @@ defmodule PhoenixKit.Templates do
   @spec render(String.t(), defaults(), Substitution.variables(), keyword()) :: rendered()
   def render(name, defaults, variables \\ %{}, opts \\ []) when is_binary(name) do
     Map.new(Overrides.parts(), fn part ->
-      content =
-        name
-        |> resolve(part, defaults, opts)
-        |> Substitution.substitute(variables, escape: part == :html)
-
-      {part, content}
+      {part, name |> resolve(part, defaults, opts) |> finish(part, variables)}
     end)
+  end
+
+  # Per-part post-processing of the resolved content. `markdown` is handed back
+  # untouched: the caller substitutes after rendering it, because a Markdown
+  # renderer percent-encodes `{{url}}` in a link target.
+  defp finish(content, :markdown, _variables), do: content
+  defp finish(content, :layout, _variables) when is_binary(content), do: String.trim(content)
+  defp finish(content, :layout, _variables), do: content
+
+  defp finish(content, :subject, variables) do
+    content |> Substitution.substitute(variables, escape: false) |> single_line()
+  end
+
+  defp finish(content, part, variables) do
+    Substitution.substitute(content, variables, escape: part == :html)
+  end
+
+  # A subject is one header line: drop trailing whitespace (the file's final
+  # newline) and turn any interior line break into a space.
+  defp single_line(nil), do: nil
+
+  defp single_line(subject) do
+    subject |> String.trim_trailing() |> then(&Regex.replace(~r/[\r\n]+/, &1, " "))
   end
 
   @doc """

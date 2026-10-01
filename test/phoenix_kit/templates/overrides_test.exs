@@ -64,6 +64,20 @@ defmodule PhoenixKit.Templates.OverridesTest do
       assert Overrides.read([root], "alert", :html, nil) == "<p>h</p>"
     end
 
+    test "markdown reads a .md file, layout reads a .txt file", %{tmp_dir: root} do
+      write(root, "alert", "markdown.md", "# hi")
+      write(root, "alert", "markdown.de.md", "# hallo")
+      write(root, "alert", "layout.txt", "billing")
+
+      assert Overrides.read([root], "alert", :markdown, nil) == "# hi"
+      assert Overrides.read([root], "alert", :markdown, "de-AT") == "# hallo"
+      assert Overrides.read([root], "alert", :layout, nil) == "billing"
+    end
+
+    test "parts/0 lists all five" do
+      assert Enum.sort(Overrides.parts()) == [:html, :layout, :markdown, :subject, :text]
+    end
+
     test "an earlier root shadows a later one", %{tmp_dir: root} do
       first = Path.join(root, "first")
       second = Path.join(root, "second")
