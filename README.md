@@ -76,20 +76,32 @@ times however many locales a host translates. Flat, they would interleave with
 every other template's files and you would be reading filename prefixes to tell
 them apart; grouped, a template is one folder to copy, diff or delete.
 
-`html` is genuinely optional, not nominally so: a text-only template is the
-normal case. Core's own auth emails ship without one — short transactional
-messages where plain text wins on the merits (no image blocking, no dark-mode
-breakage, no client-specific CSS, better deliverability).
+`html` is genuinely optional, not nominally so: a template with only `subject`
+and `text` is valid. What a caller does when there is no `html` — send plain
+text, derive an HTML body, wrap it in a layout — is the caller's decision, not
+this package's.
 
 Overrides live in the host application, which compiles separately from this
 package — so they are read at runtime and cached in `:persistent_term`, the
 absence of a file included.
 
+### Reserved names: a leading underscore
+
+A name may start with a single underscore (`_layout`, not `__layout`). Names
+like that are reserved for shared parts that the caller assembles around a
+message; the first is core's email layout, `_layout`. This package knows
+nothing about layouts and wraps nothing — it only finds
+`priv/phoenix_kit_templates/_layout/html.html` (or `html.<locale>.html`) the
+same way it finds any other name. By convention, ordinary template names
+should not start with an underscore, so the two do not collide; the package
+does not enforce that.
+
 ### The name is the slug
 
 There is no separate slug, and no `display_name`. `name` is validated as
-`[a-z0-9][a-z0-9_\-]*` — slug-shaped by construction, because it is a directory
-name on disk and has to be safe to join onto a path.
+`[a-z0-9][a-z0-9_\-]*` (with one optional leading underscore, see above) —
+slug-shaped by construction, because it is a directory name on disk and has to
+be safe to join onto a path.
 
 The database schema this replaces carried both, for a reason that no longer
 exists: `name` identified the template while `slug` addressed the admin

@@ -48,9 +48,11 @@ defmodule PhoenixKit.Templates do
   to tell them apart. Grouped, a template is one folder to copy, diff or delete.
 
   This is also why `name` is the only identifier and is validated as
-  `[a-z0-9][a-z0-9_\-]*`: it is a path segment, so it must be filesystem-safe.
-  It is slug-shaped by necessity, which is what makes a separate slug field a
-  second spelling of a constraint the path already enforces.
+  `[a-z0-9][a-z0-9_\-]*` with one optional leading underscore (see "Reserved
+  names" in `PhoenixKit.Templates.Overrides`): it is a path segment, so it must
+  be filesystem-safe. It is slug-shaped by necessity, which is what makes a
+  separate slug field a second spelling of a constraint the path already
+  enforces.
 
   ## Resolution
 
@@ -81,8 +83,8 @@ defmodule PhoenixKit.Templates do
 
   `subject`, `text` and `html`, named for what they are rather than for email:
   push uses subject-as-title plus text, Telegram and SMS use text alone, the
-  in-app inbox uses text. `html` is genuinely optional — core's own auth emails
-  ship text-only, so a template with no `html` is the normal case.
+  in-app inbox uses text. `html` is genuinely optional — a template with no
+  `html` is valid, and what a caller does without one is the caller's decision.
 
   `html` HTML-escapes a bound `{{variable}}` value; `subject` and `text`,
   being plain text, never do. `{{{variable}}}` (triple braces) is the

@@ -40,6 +40,17 @@ defmodule PhoenixKit.Templates.Overrides do
   `text.txt`. A part with no file at all resolves to `nil`, and the caller falls
   back to its own default.
 
+  ## Reserved names
+
+  A name may start with **one** underscore (`_layout`). Such names are
+  reserved for shared parts that the *caller* assembles around a message — the
+  first is core's email layout, `_layout`. This package knows nothing about
+  layouts and wraps nothing: it finds `_layout/html.html` (and
+  `html.<locale>.html`) exactly as it finds any other name. The underscore is
+  meant to keep such a directory from colliding with a template name: by
+  convention ordinary names should not start with one, but this module does not
+  enforce that.
+
   ## Runtime, not compile time
 
   Overrides live in the *host* application, which is compiled separately from
@@ -52,15 +63,16 @@ defmodule PhoenixKit.Templates.Overrides do
   ## Path safety
 
   `name` and `locale` are matched against strict patterns before they are ever
-  joined onto a root. They are literals at every current call site, but this
-  module turns a name into a filesystem read, and that is not a boundary to
-  leave to the caller's good behaviour — `../../../etc/passwd` resolves to no
-  override rather than to a file.
+  joined onto a root. A name is `[a-z0-9][a-z0-9_\-]*` with an optional single
+  leading underscore; dots and slashes never match. They are literals at every
+  current call site, but this module turns a name into a filesystem read, and
+  that is not a boundary to leave to the caller's good behaviour —
+  `../../../etc/passwd` resolves to no override rather than to a file.
   """
 
   @parts %{subject: "txt", text: "txt", html: "html"}
 
-  @name_pattern ~r/\A[a-z0-9][a-z0-9_\-]*\z/
+  @name_pattern ~r/\A_?[a-z0-9][a-z0-9_\-]*\z/
   @locale_pattern ~r/\A[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,3}\z/
 
   @typedoc "Which part of a template to look for."
