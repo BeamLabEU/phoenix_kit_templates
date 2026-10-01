@@ -106,7 +106,8 @@ They differ from the other parts in what `render/4` does with them:
 - `layout` holds the *name* of a layout group (e.g. `billing`) and is
   **locale-less**: the group is chosen per message, not per language, so only
   `layout.txt` is read and a `layout.<locale>.txt` is ignored. It is returned
-  trimmed, without substitution, and `missing_variables/4` never reports it.
+  trimmed (also of a leading byte-order mark), without substitution, and
+  `missing_variables/4` never reports it.
 
 ### Where a part came from
 
@@ -129,7 +130,7 @@ but it returns `{path, content}` (or `nil`) — `read/4` is built on it.
 `render/4` returns `subject` trimmed on both sides (and without a leading
 byte-order mark) — the final newline an editor adds to `subject.txt` is not
 part of the subject — and replaces any interior `\r`/`\n` (a wrapped file, or
-a substituted value) with a single space. This holds for files and `defaults`
+a substituted value), with the whitespace around it, with a single space. This holds for files and `defaults`
 alike; `text`, `html` and `markdown` keep their line breaks.
 
 ### Reserved names: a leading underscore
@@ -187,8 +188,8 @@ data, not as markup to preserve, so a value that already contains `&amp;` is
 escaped again.
 
 `{{{variable}}}` (triple braces) substitutes **raw** in `subject`, `text` and
-`html`, regardless of escaping — the opt-out for a variable that already holds rendered HTML, such
-as a pre-built line-items table:
+`html`, regardless of escaping — the opt-out for a variable that already holds
+rendered HTML, such as a pre-built line-items table:
 
 ```elixir
 PhoenixKit.Templates.render(

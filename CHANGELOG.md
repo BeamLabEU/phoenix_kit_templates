@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.2 - 2026-10-01
+
+### Added
+
+- **`markdown` and `layout` parts.** `render/4` now returns
+  `%{subject:, text:, html:, markdown:, layout:}`. `markdown` (`markdown[.locale].md`)
+  is returned exactly as read, with no placeholder substitution, so the caller
+  can render Markdown before substituting. `layout` (`layout.txt`) names a
+  layout group; it is locale-less, trimmed and unsubstituted.
+  `missing_variables/4` reports a `markdown` part's unbound placeholders and
+  never reports `layout`.
+  ([#3](https://github.com/BeamLabEU/phoenix_kit_templates/pull/3))
+- `PhoenixKit.Templates.sources/3` reports whether each part came from a host
+  file (`{:file, path}`) or from the caller's defaults (`:default`), on the same
+  resolution as `render/4`.
+- `PhoenixKit.Templates.Overrides.locate/4` is `read/4` that also returns the
+  file's path. `read/4` is built on it.
+
+### Changed
+
+- **`subject` is a single line.** It is returned trimmed, without a leading
+  byte-order mark, and any line break inside it (with the whitespace around it)
+  becomes one space — for files, defaults and substituted values alike. The
+  final newline an editor adds to `subject.txt` is no longer part of the
+  subject. `text`, `html` and `markdown` keep their line breaks.
+- The `Overrides` cache key is tagged, so an entry cached by 0.2.1 is never read
+  as a `{path, content}` pair after a live reload.
+
 ## 0.2.1 - 2026-10-01
 
 ### Added

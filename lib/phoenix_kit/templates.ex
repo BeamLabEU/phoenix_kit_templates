@@ -114,8 +114,8 @@ defmodule PhoenixKit.Templates do
     * `layout` is a one-line file whose content names a layout group
       (`billing`). It is **locale-less** — the group is chosen per message,
       not per language — so only `layout.txt` is read and a
-      `layout.<locale>.txt` is ignored. It is returned trimmed
-      (`String.trim/1`), without substitution, and `missing_variables/4`
+      `layout.<locale>.txt` is ignored. It is returned trimmed (and without a
+      leading byte-order mark), without substitution, and `missing_variables/4`
       never reports it.
 
   ### Where a part came from
@@ -130,7 +130,8 @@ defmodule PhoenixKit.Templates do
   A subject becomes a single header line, so `render/4` returns it trimmed on
   both sides, without a leading byte-order mark — the newline most editors
   append to a file is not part of the subject — and any `\\r`/`\\n` inside it
-  (a wrapped file, or a variable value) becomes a single space. This applies
+  (a wrapped file, or a variable value), with the whitespace around it,
+  becomes a single space. This applies
   to files and `defaults` alike; `text`, `html` and `markdown` keep their line
   breaks.
   """
@@ -195,7 +196,7 @@ defmodule PhoenixKit.Templates do
   # untouched: the caller substitutes after rendering it, because a Markdown
   # renderer percent-encodes `{{url}}` in a link target.
   defp finish(content, :markdown, _variables), do: content
-  defp finish(content, :layout, _variables) when is_binary(content), do: String.trim(content)
+  defp finish(content, :layout, _variables) when is_binary(content), do: trim_bom(content)
   defp finish(content, :layout, _variables), do: content
 
   defp finish(content, :subject, variables) do
@@ -207,15 +208,17 @@ defmodule PhoenixKit.Templates do
   end
 
   # A subject is one header line: drop a BOM and surrounding whitespace (the
-  # file's final newline) and turn any interior line break into a space.
+  # file's final newline) and turn any interior line break, with the whitespace
+  # around it (a wrapped file's indentation), into one space.
   defp single_line(nil), do: nil
 
   defp single_line(subject) do
-    subject
-    |> String.trim_leading("\u{FEFF}")
-    |> String.trim()
-    |> then(&Regex.replace(~r/[\r\n]+/, &1, " "))
+    subject |> trim_bom() |> then(&Regex.replace(~r/\s*[\r\n]\s*/, &1, " "))
   end
+
+  # An editor on some platforms prepends a BOM; it is not whitespace to
+  # `String.trim/1`, so it would otherwise survive as an invisible character.
+  defp trim_bom(content), do: content |> String.trim_leading("\u{FEFF}") |> String.trim()
 
   @doc """
   Where each part of `name` would come from, for a preview screen.

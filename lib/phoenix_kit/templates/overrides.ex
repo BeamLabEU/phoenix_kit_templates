@@ -23,8 +23,8 @@ defmodule PhoenixKit.Templates.Overrides do
           └── text.txt
 
   `subject`, `text` and `layout` are `.txt`; `html` is `.html`; `markdown` is
-  `.md`. A root is typically
-  `Application.app_dir(:my_app, "priv/phoenix_kit_templates")`, but this module
+  `.md`. A root is typically `Application.app_dir(:my_app,
+  "priv/phoenix_kit_templates")`, but this module
   takes roots as an argument and reads no configuration of its own — it must
   not know which application is using it.
 

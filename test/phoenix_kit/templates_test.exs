@@ -165,6 +165,13 @@ defmodule PhoenixKit.TemplatesTest do
       assert Templates.render("alert", %{subject: "\u{FEFF} Hi"}, %{}).subject == "Hi"
     end
 
+    test "whitespace around an interior line break collapses into one space", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "New login  \r\n    to your account\n")
+
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject ==
+               "New login to your account"
+    end
+
     test "other parts keep their trailing newline", %{tmp_dir: root} do
       write(root, "alert", "text.txt", "Body\nline\n")
       assert Templates.render("alert", %{}, %{}, paths: [root]).text == "Body\nline\n"
@@ -213,6 +220,13 @@ defmodule PhoenixKit.TemplatesTest do
                "billing"
 
       assert Templates.render("invoice", %{layout: " {{g}}\n"}, %{"g" => "x"}).layout == "{{g}}"
+    end
+
+    test "layout drops a leading byte-order mark", %{tmp_dir: root} do
+      write(root, "invoice", "layout.txt", "\u{FEFF}billing\n")
+
+      assert Templates.render("invoice", %{}, %{}, paths: [root]).layout == "billing"
+      assert Templates.render("invoice", %{layout: "\u{FEFF} billing"}, %{}).layout == "billing"
     end
 
     test "layout ignores a locale-specific file", %{tmp_dir: root} do
