@@ -34,15 +34,19 @@ defmodule PhoenixKit.Templates do
           ├── subject.de.txt          <- <part>.<locale>.<ext>
           ├── text.txt
           ├── text.de.txt
-          └── html.html
+          ├── html.html
+          ├── markdown.md
+          └── layout.txt
 
   | part | file | used by |
   |---|---|---|
   | `subject` | `subject[.locale].txt` | email subject, push title |
   | `text` | `text[.locale].txt` | every channel |
   | `html` | `html[.locale].html` | email only, optional |
+  | `markdown` | `markdown[.locale].md` | email only, optional — an alternative to `html` |
+  | `layout` | `layout.txt` | email only, optional — names a layout group |
 
-  A directory rather than flat files because one template is up to three parts
+  A directory rather than flat files because one template is up to five parts
   times however many locales a host translates — flat, they would interleave
   with every other template's files and you would be reading filename prefixes
   to tell them apart. Grouped, a template is one folder to copy, diff or delete.
@@ -81,28 +85,78 @@ defmodule PhoenixKit.Templates do
 
   ## Parts
 
-  `subject`, `text` and `html`, named for what they are rather than for email:
-  push uses subject-as-title plus text, Telegram and SMS use text alone, the
-  in-app inbox uses text. `html` is genuinely optional — a template with no
-  `html` is valid, and what a caller does without one is the caller's decision.
+  `subject`, `text`, `html`, `markdown` and `layout`, named for what they are
+  rather than for email: push uses subject-as-title plus text, Telegram and
+  SMS use text alone, the in-app inbox uses text. `html` is genuinely
+  optional — a template with no `html` is valid, and what a caller does
+  without one is the caller's decision.
 
   `html` HTML-escapes a bound `{{variable}}` value; `subject` and `text`,
   being plain text, never do. `{{{variable}}}` (triple braces) is the
-  escaping opt-out, substituting raw in every part — see `render/4` and
-  `PhoenixKit.Templates.Substitution` for the full syntax.
+  escaping opt-out, substituting raw — see `render/4` and
+  `PhoenixKit.Templates.Substitution` for the full syntax. Substitution
+  (double and triple braces) happens in `subject`, `text` and `html` only;
+  `markdown` and `layout` come back without it.
+
+  ### `markdown` and `layout`: found, not interpreted
+
+  This package only *finds* these two parts; it renders no Markdown and
+  selects no layout. `render/4` treats them differently from the other three:
+
+    * `markdown` is returned **exactly** as `PhoenixKit.Templates.Overrides.read/4` (or `defaults`)
+      supplied it — **no placeholder substitution**. Placeholders such as
+      `[Confirm]({{confirmation_url}})` are still in the string. The caller
+      renders the Markdown first and substitutes afterwards, because a
+      Markdown renderer percent-encodes `{{url}}` inside a link target and
+      would break a value substituted beforehand. `missing_variables/4`
+      still reports a `markdown` part's unbound placeholders — the ones the
+      caller will substitute.
+    * `layout` is a one-line file whose content names a layout group
+      (`billing`). It is **locale-less** — the group is chosen per message,
+      not per language — so only `layout.txt` is read and a
+      `layout.<locale>.txt` is ignored. It is returned trimmed
+      (`String.trim/1`), without substitution, and `missing_variables/4`
+      never reports it.
+
+  ### Where a part came from
+
+  `sources/3` answers "which file, if any, supplied each part?" with
+  `{:file, path}` / `:default`, on the same resolution as `render/4`. It exists
+  for preview screens. `PhoenixKit.Templates.Overrides.locate/4` is the
+  lower-level form that also returns the file's content.
+
+  ### `subject` is one line
+
+  A subject becomes a single header line, so `render/4` returns it trimmed on
+  both sides, without a leading byte-order mark — the newline most editors
+  append to a file is not part of the subject — and any `\\r`/`\\n` inside it
+  (a wrapped file, or a variable value) becomes a single space. This applies
+  to files and `defaults` alike; `text`, `html` and `markdown` keep their line
+  breaks.
   """
 
   alias PhoenixKit.Templates.Overrides
   alias PhoenixKit.Templates.Substitution
 
   @typedoc "Rendered content, ready for a channel to deliver."
-  @type rendered :: %{subject: String.t() | nil, text: String.t() | nil, html: String.t() | nil}
+  @type rendered :: %{
+          subject: String.t() | nil,
+          text: String.t() | nil,
+          html: String.t() | nil,
+          markdown: String.t() | nil,
+          layout: String.t() | nil
+        }
 
   @typedoc "Package-shipped content, already localized by the caller."
   @type defaults :: %{optional(Overrides.part()) => String.t() | nil}
 
   @doc """
-  Renders `name` into `%{subject:, text:, html:}`.
+  Renders `name` into `%{subject:, text:, html:, markdown:, layout:}`.
+
+  The map always carries all five keys; a part with neither override nor
+  default is `nil`. Only `subject`, `text` and `html` are substituted;
+  `markdown` and `layout` are not — see
+  "`markdown` and `layout`: found, not interpreted" in the module docs.
 
   ## Options
 
@@ -117,7 +171,7 @@ defmodule PhoenixKit.Templates do
   ## Escaping
 
   The `html` part HTML-escapes a bound `{{variable}}` value (`&` `<` `>` `"`
-  `'`); `subject` and `text` never do, being plain text. In every part,
+  `'`); `subject` and `text` never do, being plain text. In all three,
   `{{{variable}}}` (triple braces) substitutes raw — the opt-out for a
   variable that already holds rendered HTML, such as a pre-built line-items
   table. See `PhoenixKit.Templates.Substitution` for the full syntax and its
@@ -133,27 +187,82 @@ defmodule PhoenixKit.Templates do
   @spec render(String.t(), defaults(), Substitution.variables(), keyword()) :: rendered()
   def render(name, defaults, variables \\ %{}, opts \\ []) when is_binary(name) do
     Map.new(Overrides.parts(), fn part ->
-      content =
-        name
-        |> resolve(part, defaults, opts)
-        |> Substitution.substitute(variables, escape: part == :html)
+      {part, name |> resolve(part, defaults, opts) |> finish(part, variables)}
+    end)
+  end
 
-      {part, content}
+  # Per-part post-processing of the resolved content. `markdown` is handed back
+  # untouched: the caller substitutes after rendering it, because a Markdown
+  # renderer percent-encodes `{{url}}` in a link target.
+  defp finish(content, :markdown, _variables), do: content
+  defp finish(content, :layout, _variables) when is_binary(content), do: String.trim(content)
+  defp finish(content, :layout, _variables), do: content
+
+  defp finish(content, :subject, variables) do
+    content |> Substitution.substitute(variables, escape: false) |> single_line()
+  end
+
+  defp finish(content, part, variables) do
+    Substitution.substitute(content, variables, escape: part == :html)
+  end
+
+  # A subject is one header line: drop a BOM and surrounding whitespace (the
+  # file's final newline) and turn any interior line break into a space.
+  defp single_line(nil), do: nil
+
+  defp single_line(subject) do
+    subject
+    |> String.trim_leading("\u{FEFF}")
+    |> String.trim()
+    |> then(&Regex.replace(~r/[\r\n]+/, &1, " "))
+  end
+
+  @doc """
+  Where each part of `name` would come from, for a preview screen.
+
+  Returns `%{part => {:file, path} | :default}`:
+
+    * `{:file, path}` — a host override file was found, `path` being the file
+      read. An empty file counts: whether empty means absent is the caller's
+      decision.
+    * `:default` — no file, and `defaults` carries a non-`nil` value for it.
+    * no key — neither exists; `render/4` yields `nil` for that part.
+
+  Built on the same resolution as `render/4` and `missing_variables/4`, so the
+  reported source cannot differ from the content that would be sent. Takes the
+  same `:locale` and `:paths` options.
+  """
+  @spec sources(String.t(), defaults(), keyword()) ::
+          %{optional(Overrides.part()) => {:file, Path.t()} | :default}
+  def sources(name, defaults, opts \\ []) when is_binary(name) do
+    Enum.reduce(Overrides.parts(), %{}, fn part, acc ->
+      case {locate(name, part, opts), Map.get(defaults, part)} do
+        {{path, _content}, _default} -> Map.put(acc, part, {:file, path})
+        {nil, nil} -> acc
+        {nil, _default} -> Map.put(acc, part, :default)
+      end
     end)
   end
 
   @doc """
-  Placeholder names that `render/4` would leave unbound, keyed by part.
+  Placeholder names that the given variables leave unbound, keyed by part.
 
-  Parts that would render cleanly are omitted, so an empty map means the render
-  is fully bound. Intended for a test or a preview screen — `render/4` itself
+  For `subject`, `text` and `html` these are exactly the placeholders `render/4`
+  would leave verbatim. `markdown` is not substituted by `render/4`, so there
+  the names are the placeholders its source contains that the variables do not
+  bind — what the caller would leave unbound when it substitutes after
+  rendering the Markdown. `layout` is a group name, not a message part with
+  placeholders, and is never reported.
+
+  Parts with nothing unbound are omitted, so an empty map means everything is
+  bound. Intended for a test or a preview screen — `render/4` itself
   never fails over a bad placeholder, because a message with one flawed line is
   still better than a message that never arrives.
   """
   @spec missing_variables(String.t(), defaults(), Substitution.variables(), keyword()) ::
           %{optional(Overrides.part()) => [String.t()]}
   def missing_variables(name, defaults, variables \\ %{}, opts \\ []) when is_binary(name) do
-    Enum.reduce(Overrides.parts(), %{}, fn part, acc ->
+    Enum.reduce(Overrides.parts() -- [:layout], %{}, fn part, acc ->
       case name |> resolve(part, defaults, opts) |> Substitution.missing(variables) do
         [] -> acc
         names -> Map.put(acc, part, names)
@@ -164,6 +273,13 @@ defmodule PhoenixKit.Templates do
   # The one resolution both functions share, so the check can never inspect
   # different content from what the render would send.
   defp resolve(name, part, defaults, opts) do
-    Overrides.read(opts[:paths] || [], name, part, opts[:locale]) || Map.get(defaults, part)
+    case locate(name, part, opts) do
+      {_path, content} -> content
+      nil -> Map.get(defaults, part)
+    end
+  end
+
+  defp locate(name, part, opts) do
+    Overrides.locate(opts[:paths] || [], name, part, opts[:locale])
   end
 end

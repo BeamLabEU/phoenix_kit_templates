@@ -2,6 +2,7 @@ defmodule PhoenixKit.TemplatesTest do
   use ExUnit.Case, async: true
 
   alias PhoenixKit.Templates
+  alias PhoenixKit.Templates.Overrides
 
   @moduletag :tmp_dir
 
@@ -121,6 +122,166 @@ defmodule PhoenixKit.TemplatesTest do
         )
 
       assert rendered.html == "<p>&lt;script&gt;</p><p><em>ok</em></p>"
+    end
+  end
+
+  describe "render/4 subject is a single line" do
+    test "a trailing \\n in a file is dropped", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "New login\n")
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject == "New login"
+    end
+
+    test "a trailing \\r\\n and spaces are dropped", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "New login  \r\n\r\n")
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject == "New login"
+    end
+
+    test "interior line breaks become one space", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "New\nlogin\r\nto your\raccount\n")
+
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject ==
+               "New login to your account"
+    end
+
+    test "applies to defaults too" do
+      assert Templates.render("alert", %{subject: "Hi\n"}, %{}).subject == "Hi"
+      assert Templates.render("alert", %{subject: "Hi\nthere"}, %{}).subject == "Hi there"
+    end
+
+    test "a line break inside a substituted value is flattened too" do
+      assert Templates.render("alert", %{subject: "Hi {{name}}"}, %{"name" => "A\nBcc: x"}).subject ==
+               "Hi A Bcc: x"
+    end
+
+    test "leading whitespace and line breaks are dropped", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "\n  New login\n")
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject == "New login"
+      assert Templates.render("alert", %{subject: " \r\nHi"}, %{}).subject == "Hi"
+    end
+
+    test "a leading byte-order mark is dropped", %{tmp_dir: root} do
+      write(root, "alert", "subject.txt", "\u{FEFF}New login\n")
+      assert Templates.render("alert", %{}, %{}, paths: [root]).subject == "New login"
+      assert Templates.render("alert", %{subject: "\u{FEFF} Hi"}, %{}).subject == "Hi"
+    end
+
+    test "other parts keep their trailing newline", %{tmp_dir: root} do
+      write(root, "alert", "text.txt", "Body\nline\n")
+      assert Templates.render("alert", %{}, %{}, paths: [root]).text == "Body\nline\n"
+    end
+
+    test "an absent subject stays nil" do
+      assert Templates.render("alert", %{}, %{}).subject == nil
+    end
+  end
+
+  describe "render/4 markdown and layout parts" do
+    test "always returns the five keys" do
+      rendered = Templates.render("alert", %{}, %{})
+      assert Enum.sort(Map.keys(rendered)) == [:html, :layout, :markdown, :subject, :text]
+    end
+
+    test "markdown is returned verbatim from a file, unsubstituted", %{tmp_dir: root} do
+      md = "# Hi {{name}}\n\n[Confirm]({{confirmation_url}})\n"
+      write(root, "register", "markdown.md", md)
+
+      rendered =
+        Templates.render("register", %{}, %{"name" => "Ada", "confirmation_url" => "https://x"},
+          paths: [root]
+        )
+
+      assert rendered.markdown == md
+    end
+
+    test "markdown from defaults is returned verbatim too" do
+      md = "Hi {{{name}}}\n"
+      assert Templates.render("register", %{markdown: md}, %{"name" => "Ada"}).markdown == md
+    end
+
+    test "markdown selects its locale file", %{tmp_dir: root} do
+      write(root, "register", "markdown.md", "en")
+      write(root, "register", "markdown.ru.md", "ru")
+
+      assert Templates.render("register", %{}, %{}, paths: [root], locale: "ru").markdown == "ru"
+      assert Templates.render("register", %{}, %{}, paths: [root], locale: "de").markdown == "en"
+    end
+
+    test "layout is trimmed and unsubstituted", %{tmp_dir: root} do
+      write(root, "invoice", "layout.txt", "  billing\n")
+
+      assert Templates.render("invoice", %{}, %{"billing" => "x"}, paths: [root]).layout ==
+               "billing"
+
+      assert Templates.render("invoice", %{layout: " {{g}}\n"}, %{"g" => "x"}).layout == "{{g}}"
+    end
+
+    test "layout ignores a locale-specific file", %{tmp_dir: root} do
+      write(root, "invoice", "layout.de.txt", "de-group")
+      assert Templates.render("invoice", %{}, %{}, paths: [root], locale: "de").layout == nil
+
+      # Absence is cached, so drop it before the file appears.
+      Overrides.reset_cache([root])
+      write(root, "invoice", "layout.txt", "billing\n")
+
+      assert Templates.render("invoice", %{}, %{}, paths: [root], locale: "de").layout ==
+               "billing"
+
+      assert Templates.sources("invoice", %{}, paths: [root], locale: "de").layout ==
+               {:file, Path.join([root, "invoice", "layout.txt"])}
+    end
+
+    test "missing_variables/4 never reports layout", %{tmp_dir: root} do
+      write(root, "invoice", "layout.txt", "{{group}}")
+      assert Templates.missing_variables("invoice", %{layout: "{{x}}"}, %{}, paths: [root]) == %{}
+      assert Templates.missing_variables("invoice", %{layout: "{{x}}"}, %{}) == %{}
+    end
+
+    test "a template with no markdown or layout has nil for both" do
+      assert %{markdown: nil, layout: nil} = Templates.render("alert", %{text: "x"}, %{})
+    end
+
+    test "missing_variables/4 counts markdown placeholders like any other part", %{tmp_dir: root} do
+      write(root, "register", "markdown.md", "[Go]({{confirmation_url}}) {{name}}")
+
+      assert Templates.missing_variables("register", %{}, %{"name" => "Ada"}, paths: [root]) ==
+               %{markdown: ["confirmation_url"]}
+    end
+  end
+
+  describe "sources/3" do
+    test "reports file, default, and absent parts", %{tmp_dir: root} do
+      write(root, "alert", "text.txt", "from file")
+      write(root, "alert", "subject.de.txt", "de subject")
+
+      defaults = %{subject: "default subject", text: "default text", html: nil}
+
+      assert Templates.sources("alert", defaults, paths: [root], locale: "de") == %{
+               subject: {:file, Path.join([root, "alert", "subject.de.txt"])},
+               text: {:file, Path.join([root, "alert", "text.txt"])}
+             }
+    end
+
+    test "a default without a file is :default; a nil default has no key" do
+      assert Templates.sources("alert", %{subject: "s", text: nil}) == %{subject: :default}
+      assert Templates.sources("alert", %{}) == %{}
+    end
+
+    test "an empty file is still reported as a file", %{tmp_dir: root} do
+      write(root, "alert", "html.html", "")
+
+      assert Templates.sources("alert", %{html: "<p>x</p>"}, paths: [root]) ==
+               %{html: {:file, Path.join([root, "alert", "html.html"])}}
+    end
+
+    test "covers markdown and layout", %{tmp_dir: root} do
+      write(root, "alert", "markdown.md", "# x")
+      write(root, "alert", "layout.txt", "billing")
+
+      assert %{markdown: {:file, _}, layout: {:file, _}} =
+               Templates.sources("alert", %{}, paths: [root])
+
+      assert Templates.sources("alert", %{markdown: "m", layout: "l"}) ==
+               %{markdown: :default, layout: :default}
     end
   end
 

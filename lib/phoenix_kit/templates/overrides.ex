@@ -22,10 +22,15 @@ defmodule PhoenixKit.Templates.Overrides do
           ├── subject.de.txt
           └── text.txt
 
-  `subject` and `text` are `.txt`; `html` is `.html`. A root is typically
+  `subject`, `text` and `layout` are `.txt`; `html` is `.html`; `markdown` is
+  `.md`. A root is typically
   `Application.app_dir(:my_app, "priv/phoenix_kit_templates")`, but this module
-  takes roots as an argument and reads no configuration of its own — it must not
-  know which application is using it.
+  takes roots as an argument and reads no configuration of its own — it must
+  not know which application is using it.
+
+  `layout` is the one part with no locale: it names a layout group, which is
+  chosen per message rather than per language, so only `layout.txt` is ever
+  read and `layout.<locale>.txt` is ignored.
 
   Lookup runs most- to least-specific and stops at the first file that exists:
 
@@ -39,6 +44,10 @@ defmodule PhoenixKit.Templates.Overrides do
   `subject.de.txt` and `text.txt`, and an Italian reader gets `subject.txt` and
   `text.txt`. A part with no file at all resolves to `nil`, and the caller falls
   back to its own default.
+
+  `locate/4` is `read/4` that also returns the path of the file it read —
+  `{path, content}` — for callers that need to say where content came from.
+  `read/4` is built on it, so the two always agree.
 
   ## Reserved names
 
@@ -70,13 +79,13 @@ defmodule PhoenixKit.Templates.Overrides do
   `../../../etc/passwd` resolves to no override rather than to a file.
   """
 
-  @parts %{subject: "txt", text: "txt", html: "html"}
+  @parts %{subject: "txt", text: "txt", html: "html", markdown: "md", layout: "txt"}
 
   @name_pattern ~r/\A_?[a-z0-9][a-z0-9_\-]*\z/
   @locale_pattern ~r/\A[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,3}\z/
 
   @typedoc "Which part of a template to look for."
-  @type part :: :subject | :text | :html
+  @type part :: :subject | :text | :html | :markdown | :layout
 
   @doc "The parts an override file can supply."
   @spec parts() :: [part()]
@@ -92,8 +101,28 @@ defmodule PhoenixKit.Templates.Overrides do
   """
   @spec read([Path.t()], String.t(), part(), String.t() | nil) :: String.t() | nil
   def read(roots, name, part, locale) when is_list(roots) do
+    case locate(roots, name, part, locale) do
+      {_path, content} -> content
+      nil -> nil
+    end
+  end
+
+  @doc """
+  Like `read/4`, but also says *which file* the content came from:
+  `{path, content}`, or `nil` when there is no override.
+
+  Validation, candidate order (locale → base language → locale-less, roots in
+  order) and the cache are exactly `read/4`'s — `read/4` is implemented on top
+  of this function, so the two can never disagree about which file wins. The
+  path is the one that was read (a root joined with the name and file), as a
+  preview screen would show it. An empty file is still found: whether empty
+  means absent is the caller's decision.
+  """
+  @spec locate([Path.t()], String.t(), part(), String.t() | nil) ::
+          {Path.t(), String.t()} | nil
+  def locate(roots, name, part, locale) when is_list(roots) do
     if valid_request?(name, part) do
-      cached_lookup(roots, name, part, normalize_locale(locale))
+      cached_lookup(roots, name, part, normalize_locale(part, locale))
     end
   end
 
@@ -109,7 +138,7 @@ defmodule PhoenixKit.Templates.Overrides do
   """
   @spec reset_cache([Path.t()] | :all) :: :ok
   def reset_cache(roots \\ :all) do
-    for {{__MODULE__, cached_roots, _name, _part, _locale} = key, _value} <-
+    for {{__MODULE__, :located, cached_roots, _name, _part, _locale} = key, _value} <-
           :persistent_term.get(),
         roots == :all or Enum.any?(cached_roots, &(&1 in roots)) do
       :persistent_term.erase(key)
@@ -125,23 +154,29 @@ defmodule PhoenixKit.Templates.Overrides do
     is_binary(name) and Map.has_key?(@parts, part) and Regex.match?(@name_pattern, name)
   end
 
+  # `layout` is locale-less, so it normalizes to `nil` like an unparseable one.
   # An unparseable locale contributes no candidates of its own rather than being
   # interpolated into a path, so it resolves exactly as `nil` does — and shares
   # `nil`'s cache entry.
-  defp normalize_locale(locale) when is_binary(locale) do
+  defp normalize_locale(:layout, _locale), do: nil
+
+  defp normalize_locale(_part, locale) when is_binary(locale) do
     if Regex.match?(@locale_pattern, locale), do: locale
   end
 
-  defp normalize_locale(_locale), do: nil
+  defp normalize_locale(_part, _locale), do: nil
 
   defp cached_lookup(roots, name, part, locale) do
-    key = {__MODULE__, roots, name, part, locale}
+    # The tag keeps a cache entry written by 0.2.1 (a bare binary under the
+    # untagged key) from being misread as a `{path, content}` pair after a
+    # live code reload.
+    key = {__MODULE__, :located, roots, name, part, locale}
 
     case :persistent_term.get(key, :miss) do
       :miss ->
-        content = lookup(roots, name, part, locale)
-        :persistent_term.put(key, content)
-        content
+        found = lookup(roots, name, part, locale)
+        :persistent_term.put(key, found)
+        found
 
       cached ->
         cached
@@ -179,7 +214,7 @@ defmodule PhoenixKit.Templates.Overrides do
 
   defp read_file(path) do
     case File.read(path) do
-      {:ok, content} -> content
+      {:ok, content} -> {path, content}
       {:error, _reason} -> nil
     end
   end

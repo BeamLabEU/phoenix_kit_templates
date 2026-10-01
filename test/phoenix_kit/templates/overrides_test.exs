@@ -64,6 +64,94 @@ defmodule PhoenixKit.Templates.OverridesTest do
       assert Overrides.read([root], "alert", :html, nil) == "<p>h</p>"
     end
 
+    test "markdown reads a .md file, layout reads a .txt file", %{tmp_dir: root} do
+      write(root, "alert", "markdown.md", "# hi")
+      write(root, "alert", "markdown.de.md", "# hallo")
+      write(root, "alert", "layout.txt", "billing")
+
+      assert Overrides.read([root], "alert", :markdown, nil) == "# hi"
+      assert Overrides.read([root], "alert", :markdown, "de-AT") == "# hallo"
+      assert Overrides.read([root], "alert", :layout, nil) == "billing"
+    end
+
+    test "parts/0 lists all five" do
+      assert Enum.sort(Overrides.parts()) == [:html, :layout, :markdown, :subject, :text]
+    end
+
+    test "locate/4 returns the path read/4 reads, through every fallback", %{tmp_dir: root} do
+      first = Path.join(root, "first")
+      second = Path.join(root, "second")
+      write(first, "alert", "text.txt", "plain")
+      write(second, "alert", "text.de.txt", "second-de")
+      write(second, "alert", "text.de-AT.txt", "second-de-at")
+
+      f_plain = {Path.join([first, "alert", "text.txt"]), "plain"}
+      s_de = {Path.join([second, "alert", "text.de.txt"]), "second-de"}
+      s_de_at = {Path.join([second, "alert", "text.de-AT.txt"]), "second-de-at"}
+
+      # {roots, locale, expected}: an earlier root shadows a later one even
+      # when the later one has the more specific locale.
+      cases = [
+        {[first, second], nil, f_plain},
+        {[first, second], "de", f_plain},
+        {[first, second], "de-AT", f_plain},
+        {[second, first], nil, f_plain},
+        {[second, first], "de", s_de},
+        {[second, first], "de-AT", s_de_at},
+        {[second, first], "de-CH", s_de},
+        {[second, first], "fr", f_plain},
+        {[second, first], "junk!", f_plain},
+        {[second], "de-AT", s_de_at},
+        {[second], "de-CH", s_de},
+        {[second], "fr", nil},
+        {[second], nil, nil}
+      ]
+
+      for {roots, locale, expected} <- cases do
+        assert Overrides.locate(roots, "alert", :text, locale) == expected,
+               "locate #{inspect(roots)} #{inspect(locale)}"
+
+        expected_content = expected && elem(expected, 1)
+        assert Overrides.read(roots, "alert", :text, locale) == expected_content
+      end
+
+      assert Overrides.locate([second], "alert", :html, nil) == nil
+    end
+
+    test "layout is locale-less: layout.<locale>.txt is ignored", %{tmp_dir: root} do
+      write(root, "alert", "layout.de.txt", "de-group")
+      assert Overrides.locate([root], "alert", :layout, "de") == nil
+      assert Overrides.read([root], "alert", :layout, "de") == nil
+
+      # Absence is cached, so drop it before the file appears.
+      Overrides.reset_cache([root])
+      write(root, "alert", "layout.txt", "billing")
+      path = Path.join([root, "alert", "layout.txt"])
+      assert Overrides.locate([root], "alert", :layout, "de") == {path, "billing"}
+      assert Overrides.locate([root], "alert", :layout, "de-AT") == {path, "billing"}
+      assert Overrides.read([root], "alert", :layout, nil) == "billing"
+    end
+
+    test "locate/4 finds an empty file", %{tmp_dir: root} do
+      write(root, "alert", "text.txt", "")
+
+      assert Overrides.locate([root], "alert", :text, nil) ==
+               {Path.join([root, "alert", "text.txt"]), ""}
+    end
+
+    test "locate/4 junk names and locales mint no cache entries", %{tmp_dir: root} do
+      before = map_size(cache_entries(root))
+
+      assert Overrides.locate([root], "../etc", :text, nil) == nil
+      assert Overrides.locate([root], "__x", :text, nil) == nil
+      assert Overrides.locate([root], "alert", :bogus, nil) == nil
+      assert Overrides.locate([root], "alert", :text, "../../x") == nil
+
+      # Exactly one entry: the valid name and part, its garbage locale having
+      # collapsed into the nil-locale entry.
+      assert map_size(cache_entries(root)) == before + 1
+    end
+
     test "an earlier root shadows a later one", %{tmp_dir: root} do
       first = Path.join(root, "first")
       second = Path.join(root, "second")
@@ -214,6 +302,15 @@ defmodule PhoenixKit.Templates.OverridesTest do
   end
 
   defp cache_keys(root) do
-    for {{Overrides, roots, _, _, _} = key, _} <- :persistent_term.get(), root in roots, do: key
+    for {{Overrides, :located, roots, _, _, _} = key, _} <- :persistent_term.get(),
+        root in roots,
+        do: key
+  end
+
+  defp cache_entries(root) do
+    for {{Overrides, :located, roots, _, _, _} = key, value} <- :persistent_term.get(),
+        root in roots,
+        into: %{},
+        do: {key, value}
   end
 end
