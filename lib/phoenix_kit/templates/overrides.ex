@@ -203,6 +203,13 @@ defmodule PhoenixKit.Templates.Overrides do
     :ok
   end
 
+  @doc """
+  Whether `name` is a valid template name — the pattern `read/4` and `write/5`
+  both apply — for a caller that wants to check a name before writing to it.
+  """
+  @spec valid_name?(term()) :: boolean()
+  def valid_name?(name), do: check_name(name) == :ok
+
   @doc "The largest file, in bytes, that `write/5` accepts."
   @spec max_bytes() :: pos_integer()
   def max_bytes, do: @max_bytes

@@ -171,6 +171,17 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
     end
   end
 
+  describe "valid_name?/1" do
+    test "applies the pattern read/4 and write/5 use" do
+      for name <- ["alert", "_header-andi", "a_b-c9", "9lives"],
+          do: assert(Overrides.valid_name?(name))
+
+      for name <- ["../x", "Alert", "", "__x", "_", "a.b", "x\n", nil, :alert] do
+        refute Overrides.valid_name?(name), "expected #{inspect(name)} to be invalid"
+      end
+    end
+  end
+
   describe "delete/4" do
     test "removes one file and drops the cached content", %{tmp_dir: root} do
       {:ok, _} = Overrides.write(root, "alert", :text, "et", "et")
