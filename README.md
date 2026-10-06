@@ -247,12 +247,13 @@ Overrides.list(root)
 - One extra part, **`label`** (`label[.locale].txt`), a caption for an editor's
   list. Rendering never reads it.
 - The path stays inside the root, symlinks included; the root must exist.
-- Atomic (temporary file, then rename), at most 256 KiB of UTF-8 per file.
+- Atomic (temporary file, synced, then renamed; a replaced file keeps its
+  permissions), at most 256 KiB of UTF-8 per file.
 - Resets the cache for the root, so the next render sees the change at once.
   Pass the same root string the renderer gets in `:paths`.
 - Every refusal is `{:error, reason}`. `write/5` returns the paths it created
-  (a new template directory first, then the file) — for example, to fix
-  their owner.
+  (the template directory first when this is its first part file, then the
+  file) — for example, to fix their owner.
 
 ### Editor component
 
@@ -281,7 +282,10 @@ per language, creates a template empty or as a copy, and deletes one after a
 confirmation. `name_prefixes` limits what it may write as well as what it
 shows; `editable={false}` makes it read-only. `preview(name, locale)` returns
 `{subject, html}`, shown in an `<iframe sandbox>` that cannot run scripts.
-`after_write` receives the paths a save or copy created. The interface text is
+`after_write` receives the paths a save or copy created; if it or `preview`
+fails, the editor shows the error instead of crashing. `sample_variables` is
+one map for every template, so include the layout's variables if headers and
+footers use them. Each language tab is saved on its own. The interface text is
 English. The full list of attributes is in the module docs.
 
 ## No runtime dependencies
