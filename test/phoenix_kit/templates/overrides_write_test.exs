@@ -10,6 +10,17 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
 
   defp file(root, name, file), do: Path.join([root, name, file])
 
+  # `<root>/root/alert/text.txt` is a symlink to `<root>/outside/secret.txt`.
+  defp symlinked_part(root) do
+    outside = Path.join([root, "outside", "secret.txt"])
+    inside = Path.join(root, "root")
+    File.mkdir_p!(Path.dirname(outside))
+    File.write!(outside, "keep me")
+    File.mkdir_p!(Path.join(inside, "alert"))
+    File.ln_s!(outside, Path.join([inside, "alert", "text.txt"]))
+    {outside, inside}
+  end
+
   describe "write/5" do
     test "writes <root>/<name>/<part>[.<locale>].<ext>", %{tmp_dir: root} do
       assert {:ok, _paths} = Overrides.write(root, "alert", :subject, "et", "Tere")
@@ -129,14 +140,56 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
       assert File.ls!(outside) == []
     end
 
-    test "is atomic: a failed write leaves the old file and no temporary file", %{tmp_dir: root} do
+    test "is atomic: the new file replaces the old one rather than overwriting it",
+         %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "alert", :text, nil, "old")
+      path = file(root, "alert", "text.txt")
+      # A reader that opened the file before the write: with a rename it keeps
+      # the old file whole; an in-place write would truncate it under the reader.
+      {:ok, reader} = File.open(path, [:read, :binary])
+
+      {:ok, _} = Overrides.write(root, "alert", :text, nil, "new")
+
+      assert IO.binread(reader, :eof) == "old"
+      File.close(reader)
+      assert File.read!(path) == "new"
+    end
+
+    test "keeps the permissions of the file it replaces", %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "alert", :text, nil, "old")
+      path = file(root, "alert", "text.txt")
+      File.chmod!(path, 0o664)
+
+      {:ok, _} = Overrides.write(root, "alert", :text, nil, "new")
+
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o664
+    end
+
+    test "a failed write leaves no temporary file", %{tmp_dir: root} do
       {:ok, _} = Overrides.write(root, "alert", :text, nil, "old")
       # A directory where the file should go makes the final rename fail.
       File.mkdir_p!(file(root, "alert", "html.html"))
 
       assert {:error, _reason} = Overrides.write(root, "alert", :html, nil, "new")
       assert File.ls!(Path.join(root, "alert")) |> Enum.sort() == ["html.html", "text.txt"]
-      assert File.read!(file(root, "alert", "text.txt")) == "old"
+    end
+
+    test "reports a template directory that holds no part file yet", %{tmp_dir: root} do
+      # Left by an earlier write that failed after creating it, or made by
+      # hand: either way this write is what makes it a template, and a host
+      # fixing ownership needs to hear about it.
+      dir = Path.join(root, "alert")
+      File.mkdir_p!(dir)
+
+      assert Overrides.write(root, "alert", :text, nil, "x") ==
+               {:ok, [dir, Path.join(dir, "text.txt")]}
+    end
+
+    test "refuses a part file that is a symlink out of the root", %{tmp_dir: root} do
+      {outside, inside} = symlinked_part(root)
+
+      assert Overrides.write(inside, "alert", :text, nil, "x") == {:error, :unsafe_path}
+      assert File.read!(outside) == "keep me"
     end
 
     test "leaves no temporary file behind after a successful write", %{tmp_dir: root} do
@@ -212,6 +265,13 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
       assert Overrides.delete(root, "alert", :text, "../x") == {:error, :invalid_locale}
       assert Overrides.delete(Path.join(root, "no"), "a", :text, nil) == {:error, :invalid_root}
       assert File.exists?(Path.join(root, "secret.txt"))
+    end
+
+    test "refuses a part file that is a symlink out of the root", %{tmp_dir: root} do
+      {outside, inside} = symlinked_part(root)
+
+      assert Overrides.delete(inside, "alert", :text, nil) == {:error, :unsafe_path}
+      assert File.read!(outside) == "keep me"
     end
   end
 
@@ -303,6 +363,17 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
 
     test "a missing root lists nothing", %{tmp_dir: root} do
       assert Overrides.list(Path.join(root, "missing")) == []
+    end
+
+    test "a root that is not a path lists nothing, like the other calls refusing it" do
+      assert Overrides.list(nil) == []
+      assert Overrides.list(~c"/tmp") == []
+    end
+
+    test "skips a part file that is a symlink out of the root", %{tmp_dir: root} do
+      {_outside, inside} = symlinked_part(root)
+
+      assert Overrides.list(inside) == [%{name: "alert", files: []}]
     end
   end
 end

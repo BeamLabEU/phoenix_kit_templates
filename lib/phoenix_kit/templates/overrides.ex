@@ -96,9 +96,10 @@ defmodule PhoenixKit.Templates.Overrides do
       does not include it.
     * **The path stays inside the root**, symlinks included
       (`Path.safe_relative/2`), and the root must already exist.
-    * **Atomic:** the content goes to a temporary file in the same directory
-      and is renamed over the target, so a concurrent read sees the old file
-      or the new one, never half of one.
+    * **Atomic:** the content goes to a temporary file in the same directory,
+      is synced, and is renamed over the target, so a concurrent read sees the
+      old file or the new one, never half of one. A replaced file keeps its
+      permission bits.
     * **At most `max_bytes/0`** (256 KiB) of UTF-8 per file.
     * **The cache is reset for the root** (`reset_cache([root])`) after every
       change, so the next render sees it. Pass the same root string the
@@ -106,8 +107,8 @@ defmodule PhoenixKit.Templates.Overrides do
 
   Every refusal is an `{:error, reason}`; nothing raises on bad input.
   `write/5` returns the paths it created — the template directory first, when
-  the write created it, then the file — so a host can, for example, fix their
-  ownership.
+  the write is its first part file, then the file — so a host can, for example,
+  fix their ownership.
   """
 
   @parts %{subject: "txt", text: "txt", html: "html", markdown: "md", layout: "txt"}
@@ -220,7 +221,8 @@ defmodule PhoenixKit.Templates.Overrides do
 
   `part` is any rendered part or `:label`; `locale` is `nil` for the
   locale-less file. Returns `{:ok, paths}` — the template directory when this
-  call created it, then the file — or `{:error, reason}`; see "Writing" in the
+  is its first part file (a directory this call created, or one that held no
+  part file yet), then the file — or `{:error, reason}`; see "Writing" in the
   module docs for what is refused.
   """
   @spec write(Path.t(), String.t(), writable_part(), String.t() | nil, String.t()) ::
@@ -228,11 +230,11 @@ defmodule PhoenixKit.Templates.Overrides do
   def write(root, name, part, locale, content) do
     with {:ok, dir, path} <- target(root, name, part, locale),
          :ok <- check_content(content),
-         created? = not File.dir?(dir),
+         first_part? = list_files(root, name) == [],
          :ok <- File.mkdir_p(dir),
          :ok <- write_atomically(path, content) do
       reset_cache([root])
-      {:ok, if(created?, do: [dir, path], else: [path])}
+      {:ok, if(first_part?, do: [dir, path], else: [path])}
     end
   end
 
@@ -263,12 +265,19 @@ defmodule PhoenixKit.Templates.Overrides do
          :ok <- check_name(name),
          :ok <- check_inside(root, name),
          dir = Path.join(root, name),
-         true <- File.dir?(dir) || {:error, :enoent},
-         {:ok, _removed} <- File.rm_rf(dir) do
-      reset_cache([root])
-    else
+         true <- File.dir?(dir) || {:error, :enoent} do
+      remove_tree(root, dir)
+    end
+  end
+
+  defp remove_tree(root, dir) do
+    result = File.rm_rf(dir)
+    # Reset even when the removal failed part-way: some files are gone already.
+    reset_cache([root])
+
+    case result do
+      {:ok, _removed} -> :ok
       {:error, reason, _path} -> {:error, reason}
-      {:error, _reason} = error -> error
     end
   end
 
@@ -279,7 +288,7 @@ defmodule PhoenixKit.Templates.Overrides do
   included — and, inside it, every file that `write/5` could have written
   (`label` included), sorted by part and locale. Anything else (a temporary
   file, `layout.<locale>.txt`, a symlink out of the root, a stray file) is
-  skipped. A root that does not exist lists nothing.
+  skipped. A root that does not exist, or is not a string, lists nothing.
   """
   @spec list(Path.t()) :: [%{name: String.t(), files: [file_entry()]}]
   def list(root) when is_binary(root) do
@@ -294,6 +303,8 @@ defmodule PhoenixKit.Templates.Overrides do
         []
     end
   end
+
+  def list(_root), do: []
 
   defp template_dir?(root, name) do
     check_name(name) == :ok and check_inside(root, name) == :ok and
@@ -410,8 +421,9 @@ defmodule PhoenixKit.Templates.Overrides do
   defp file_name(part, locale, ext), do: "#{part}.#{locale}.#{ext}"
 
   # Written beside the target and renamed over it: a rename within a directory
-  # is atomic, so a reader never sees a half-written file. The dot prefix keeps
-  # the temporary name from ever parsing as a part file.
+  # is atomic, so a reader never sees a half-written file. The data is synced
+  # before the rename, so a crash cannot leave the new name on an empty file.
+  # The dot prefix keeps the temporary name from ever parsing as a part file.
   defp write_atomically(path, content) do
     tmp =
       Path.join(
@@ -419,13 +431,32 @@ defmodule PhoenixKit.Templates.Overrides do
         ".#{Path.basename(path)}.#{System.unique_integer([:positive])}.tmp"
       )
 
-    with :ok <- File.write(tmp, content),
+    with :ok <- write_synced(tmp, content),
+         :ok <- keep_mode(path, tmp),
          :ok <- File.rename(tmp, path) do
       :ok
     else
       error ->
         File.rm(tmp)
         error
+    end
+  end
+
+  defp write_synced(path, content) do
+    with {:ok, file} <- File.open(path, [:write, :exclusive, :binary, :raw]) do
+      try do
+        with :ok <- :file.write(file, content), do: :file.datasync(file)
+      after
+        :file.close(file)
+      end
+    end
+  end
+
+  # A replaced file keeps its permission bits rather than taking the umask's.
+  defp keep_mode(path, tmp) do
+    case File.stat(path) do
+      {:ok, %File.Stat{mode: mode}} -> File.chmod(tmp, Bitwise.band(mode, 0o777))
+      {:error, _reason} -> :ok
     end
   end
 
