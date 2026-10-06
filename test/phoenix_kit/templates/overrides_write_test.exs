@@ -315,6 +315,108 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
     end
   end
 
+  describe "copy_template/3" do
+    test "copies every regular file, not only part files, and returns the paths",
+         %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "offer", :subject, "et", "Pakkumine")
+      {:ok, _} = Overrides.write(root, "offer", :label, "et", "Hinnapakkumine")
+      File.write!(file(root, "offer", "audience.txt"), "partner\n")
+
+      dir = Path.join(root, "offer_copy")
+
+      assert Overrides.copy_template(root, "offer", "offer_copy") ==
+               {:ok,
+                [
+                  dir,
+                  Path.join(dir, "audience.txt"),
+                  Path.join(dir, "label.et.txt"),
+                  Path.join(dir, "subject.et.txt")
+                ]}
+
+      for name <- ["audience.txt", "label.et.txt", "subject.et.txt"] do
+        assert File.read!(file(root, "offer_copy", name)) == File.read!(file(root, "offer", name))
+      end
+    end
+
+    test "skips hidden files, subdirectories and symlinks out of the root", %{tmp_dir: root} do
+      outside = Path.join(root, "outside.txt")
+      inside = Path.join(root, "root")
+      File.write!(outside, "secret")
+      File.mkdir_p!(Path.join([inside, "offer", "nested"]))
+      File.write!(Path.join([inside, "offer", "text.txt"]), "t")
+      File.write!(Path.join([inside, "offer", ".text.txt.123.tmp"]), "leftover")
+      File.write!(Path.join([inside, "offer", "nested", "text.txt"]), "deep")
+      File.ln_s!(outside, Path.join([inside, "offer", "leak.txt"]))
+
+      assert {:ok, _paths} = Overrides.copy_template(inside, "offer", "copy")
+      assert File.ls!(Path.join(inside, "copy")) == ["text.txt"]
+    end
+
+    test "a copy of an empty template is an empty directory", %{tmp_dir: root} do
+      File.mkdir_p!(Path.join(root, "empty"))
+
+      assert Overrides.copy_template(root, "empty", "copy") == {:ok, [Path.join(root, "copy")]}
+      assert File.ls!(Path.join(root, "copy")) == []
+    end
+
+    test "keeps the source files' permission bits", %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "offer", :text, nil, "t")
+      File.chmod!(file(root, "offer", "text.txt"), 0o640)
+
+      {:ok, _} = Overrides.copy_template(root, "offer", "copy")
+
+      assert Bitwise.band(File.stat!(file(root, "copy", "text.txt")).mode, 0o777) == 0o640
+    end
+
+    test "the copy is visible to a cached read immediately", %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "offer", :text, nil, "t")
+      assert Overrides.read([root], "copy", :text, nil) == nil
+
+      {:ok, _} = Overrides.copy_template(root, "offer", "copy")
+
+      assert Overrides.read([root], "copy", :text, nil) == "t"
+    end
+
+    test "refuses an existing target, a missing source and bad names", %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "offer", :text, nil, "t")
+      {:ok, _} = Overrides.write(root, "taken", :text, nil, "mine")
+
+      assert Overrides.copy_template(root, "offer", "taken") == {:error, :eexist}
+      assert File.read!(file(root, "taken", "text.txt")) == "mine"
+      assert Overrides.copy_template(root, "missing", "copy") == {:error, :enoent}
+      assert Overrides.copy_template(root, "../offer", "copy") == {:error, :invalid_name}
+      assert Overrides.copy_template(root, "offer", "../copy") == {:error, :invalid_name}
+      assert Overrides.copy_template(root, "offer", nil) == {:error, :invalid_name}
+      assert Overrides.copy_template(Path.join(root, "no"), "a", "b") == {:error, :invalid_root}
+      assert Enum.sort(File.ls!(root)) == ["offer", "taken"]
+    end
+
+    test "refuses a symlinked source directory pointing out of the root", %{tmp_dir: root} do
+      outside = Path.join(root, "outside")
+      inside = Path.join(root, "root")
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "text.txt"), "secret")
+      File.mkdir_p!(inside)
+      File.ln_s!(outside, Path.join(inside, "offer"))
+
+      assert Overrides.copy_template(inside, "offer", "copy") == {:error, :unsafe_path}
+      refute File.exists?(Path.join(inside, "copy"))
+    end
+
+    test "a file over the size limit refuses the whole copy and leaves nothing behind",
+         %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "offer", :subject, nil, "s")
+
+      File.write!(
+        file(root, "offer", "text.txt"),
+        String.duplicate("a", Overrides.max_bytes() + 1)
+      )
+
+      assert Overrides.copy_template(root, "offer", "copy") == {:error, :too_large}
+      assert File.ls!(root) == ["offer"]
+    end
+  end
+
   describe "list/1" do
     test "lists template directories with their part files", %{tmp_dir: root} do
       {:ok, _} = Overrides.write(root, "beta", :text, nil, "t")

@@ -5,8 +5,8 @@ defmodule PhoenixKit.Templates.Overrides do
   A host customizes a message by dropping a file into its own repo, where it is
   version-controlled and reviewable, instead of editing a database row through
   an admin UI. Rendering only ever reads an override; `write/5`, `delete/4`,
-  `delete_template/2` and `list/1` exist for a host that edits its own files
-  from a screen of its own — see "Writing" below.
+  `delete_template/2`, `copy_template/3` and `list/1` exist for a host that
+  edits its own files from a screen of its own — see "Writing" below.
 
   ## Layout
 
@@ -83,9 +83,10 @@ defmodule PhoenixKit.Templates.Overrides do
 
   ## Writing
 
-  `write/5`, `delete/4`, `delete_template/2` and `list/1` work on **one** root —
-  the host's own directory, never a package's — and on the same layout. They are
-  plain `File` calls for a host-side editor; rendering does not use them.
+  `write/5`, `delete/4`, `delete_template/2`, `copy_template/3` and `list/1`
+  work on **one** root — the host's own directory, never a package's — and on
+  the same layout. They are plain `File` calls for a host-side editor;
+  rendering does not use them.
 
     * **Same validation as reading, but refusing instead of falling back.** The
       name must match the pattern above; a locale must be `nil` or a
@@ -103,12 +104,15 @@ defmodule PhoenixKit.Templates.Overrides do
     * **At most `max_bytes/0`** (256 KiB) of UTF-8 per file.
     * **The cache is reset for the root** (`reset_cache([root])`) after every
       change, so the next render sees it. Pass the same root string the
-      renderer gets in `:paths` — the cache is keyed on it.
+      renderer gets in `:paths` — the cache is keyed on it. A first lookup
+      that was already reading the old file when the change landed can still
+      cache what it read, after the reset; that window is one file read long,
+      and the next change or `reset_cache/1` for the root clears it.
 
   Every refusal is an `{:error, reason}`; nothing raises on bad input.
   `write/5` returns the paths it created — the template directory first, when
-  the write is its first part file, then the file — so a host can, for example,
-  fix their ownership.
+  the write is its first part file, then the file — and `copy_template/3` the
+  new directory and its files, so a host can, for example, fix their ownership.
   """
 
   @parts %{subject: "txt", text: "txt", html: "html", markdown: "md", layout: "txt"}
@@ -270,6 +274,97 @@ defmodule PhoenixKit.Templates.Overrides do
     end
   end
 
+  @doc """
+  Copies the template directory `<root>/<from>` to a new `<root>/<to>`, and
+  resets the cache for `root`.
+
+  Every regular file is copied, not only the part files `list/1` shows: a host
+  may keep files of its own beside the parts (a marker saying who a message is
+  for, say), and a copy without them would be a different template. Hidden
+  files (an interrupted write's temporary file), subdirectories and anything
+  leading out of the root are skipped. A file over `max_bytes/0` refuses the
+  whole copy with `{:error, :too_large}`; an existing `<to>` is
+  `{:error, :eexist}`. The files are copied into a hidden directory that is
+  then renamed to `<to>`, so a failed copy leaves nothing behind and a reader
+  never sees half of one.
+
+  Returns `{:ok, paths}` — the new directory, then its files — or
+  `{:error, reason}`.
+  """
+  @spec copy_template(Path.t(), String.t(), String.t()) :: {:ok, [Path.t()]} | {:error, error()}
+  def copy_template(root, from, to) do
+    with :ok <- check_root(root),
+         :ok <- check_name(from),
+         :ok <- check_name(to),
+         :ok <- check_inside(root, from),
+         :ok <- check_inside(root, to),
+         {:ok, files} <- copyable_files(root, from),
+         :ok <- check_absent(Path.join(root, to)),
+         :ok <- copy_tree(root, from, to, files) do
+      reset_cache([root])
+      dir = Path.join(root, to)
+      {:ok, [dir | Enum.map(files, &Path.join(dir, &1))]}
+    end
+  end
+
+  # The regular files directly inside a template directory that a copy takes.
+  defp copyable_files(root, name) do
+    dir = Path.join(root, name)
+
+    with true <- File.dir?(dir) || {:error, :enoent},
+         {:ok, entries} <- File.ls(dir) do
+      files =
+        entries
+        |> Enum.reject(&String.starts_with?(&1, "."))
+        |> Enum.filter(&copyable_file?(root, name, &1))
+        |> Enum.sort()
+
+      {:ok, files}
+    end
+  end
+
+  defp copyable_file?(root, name, file) do
+    check_inside(root, Path.join(name, file)) == :ok and
+      File.regular?(Path.join([root, name, file]))
+  end
+
+  defp check_absent(path) do
+    case File.lstat(path) do
+      {:ok, _stat} -> {:error, :eexist}
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp copy_tree(root, from, to, files) do
+    tmp = Path.join(root, temporary_name(to))
+
+    result =
+      with :ok <- File.mkdir(tmp),
+           :ok <- copy_files(Path.join(root, from), tmp, files) do
+        File.rename(tmp, Path.join(root, to))
+      end
+
+    if result != :ok, do: File.rm_rf(tmp)
+    result
+  end
+
+  defp copy_files(source, target, files) do
+    Enum.reduce_while(files, :ok, fn file, :ok ->
+      from = Path.join(source, file)
+      to = Path.join(target, file)
+
+      with {:ok, %File.Stat{size: size}} <- File.stat(from),
+           true <- size <= @max_bytes || {:error, :too_large},
+           {:ok, content} <- File.read(from),
+           :ok <- write_synced(to, content),
+           :ok <- keep_mode(from, to) do
+        {:cont, :ok}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
   defp remove_tree(root, dir) do
     result = File.rm_rf(dir)
     # Reset even when the removal failed part-way: some files are gone already.
@@ -423,13 +518,8 @@ defmodule PhoenixKit.Templates.Overrides do
   # Written beside the target and renamed over it: a rename within a directory
   # is atomic, so a reader never sees a half-written file. The data is synced
   # before the rename, so a crash cannot leave the new name on an empty file.
-  # The dot prefix keeps the temporary name from ever parsing as a part file.
   defp write_atomically(path, content) do
-    tmp =
-      Path.join(
-        Path.dirname(path),
-        ".#{Path.basename(path)}.#{System.unique_integer([:positive])}.tmp"
-      )
+    tmp = Path.join(Path.dirname(path), temporary_name(Path.basename(path)))
 
     with :ok <- write_synced(tmp, content),
          :ok <- keep_mode(path, tmp),
@@ -440,6 +530,13 @@ defmodule PhoenixKit.Templates.Overrides do
         File.rm(tmp)
         error
     end
+  end
+
+  # Hidden, so it never parses as a template or a part file. Random rather than
+  # `System.unique_integer/1`, which repeats across restarts: a leftover from a
+  # crash must not collide with a later write's exclusive open.
+  defp temporary_name(base) do
+    ".#{base}.#{Base.url_encode64(:rand.bytes(9), padding: false)}.tmp"
   end
 
   defp write_synced(path, content) do
