@@ -27,7 +27,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     ## Attributes
 
-      * `:root` (required) — the host's template directory.
+      * `:root` (required) — the host's template directory. Anything but a
+        string shows an error and nothing can be written.
       * `:editable` — `true` to allow saving, creating and deleting; anything
         else shows the files read-only. Default `false`. Checked again by every
         event, not only by what is rendered.
@@ -41,11 +42,16 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       * `:preview` — `{module, function}` or a 2-arity function called as
         `preview(name, locale)` (`locale` is `nil` on the fallback tab, and
         `name` may be a shared part such as `_header-x`). It returns
-        `{subject, html}` or `{:error, reason}`. The HTML is shown in an
-        `<iframe sandbox srcdoc>` without `allow-scripts`, so nothing in an
-        edited template runs in the admin page. An exception, throw or exit
-        is shown as an error rather than crashing the page. No callback, no
-        preview pane.
+        `{subject, html}` — each a string or `nil` — or `{:error, reason}`.
+        The HTML is shown in an `<iframe sandbox srcdoc>` without
+        `allow-scripts`, so nothing in an edited template runs in the admin
+        page; a `{:safe, iodata}` is escaped like a string, never trusted.
+        Any other result, an exception, throw or exit is shown as an error
+        rather than crashing the page, and the last three are logged. It is
+        called on selecting a template or tab, after a save or copy, and when
+        the host re-renders with a new callback, new variables or changed
+        files — not for a template with no files yet. No callback, no preview
+        pane.
       * `:sample_variables` — the variables a template may use, as a map of
         name to a sample value. Listed beside the editor, and any placeholder
         in the current template that is not among them is flagged. The one map
@@ -57,7 +63,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         directory first, then files) — for example to change their owner.
         This package never does. The files are written before it is called;
         if it raises, throws or exits, that is shown as an error after the
-        save's own result.
+        save's own result and logged with its stacktrace.
 
     ## What it does
 
@@ -70,7 +76,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         line. Line breaks are stored as `\\n`. Each tab is saved on its own:
         switching tabs or templates, or a reconnect, drops unsaved changes.
       * Creates a template empty (it exists on disk once its first part is
-        saved) or as a copy of a listed one.
+        saved) or as a copy of a listed one — every file in its directory,
+        including any of the host's own beside the parts
+        (`Overrides.copy_template/3`).
+      * A file that is not UTF-8 is shown as such, read-only, and never
+        written over: fix it on disk.
       * Deletes a template, after a confirmation.
 
     The interface text is plain English: a host Gettext backend cannot be
@@ -78,6 +88,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     be extracted.
     """
     use Phoenix.LiveComponent
+
+    require Logger
 
     alias PhoenixKit.Templates
     alias PhoenixKit.Templates.Overrides
@@ -126,12 +138,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     @impl true
     def update(assigns, socket) do
+      previous_files = files_of(socket, socket.assigns.selected)
       socket = assign(socket, assigns)
 
       socket =
         if editable?(socket), do: socket, else: assign(socket, confirm_delete?: false)
 
-      {:ok, socket |> load_templates() |> settle_draft() |> keep_selection()}
+      socket = socket |> load_templates() |> settle_draft() |> keep_selection()
+      {:ok, refresh_preview(socket, previous_files)}
     end
 
     @impl true
@@ -232,6 +246,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       |> preview()
     end
 
+    defp change(%{invalid: true}, _value), do: :none
     defp change(nil, ""), do: :none
     defp change(_file, ""), do: {:ok, :delete}
     defp change(nil, value), do: {:ok, {:write, value}}
@@ -275,37 +290,31 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         copy_from == "" ->
           socket |> assign(notice: nil, draft?: true) |> select(name)
 
-        # Only a template on disk has files to copy; a draft has none.
+        # Only a template on disk can be copied; a draft has no directory.
         exists?(socket, copy_from) ->
           copy(socket, copy_from, name)
 
         true ->
-          socket
+          notice(socket, :error, "There is no “#{copy_from}” to copy.")
       end
     end
 
+    # The whole directory, not just the parts this editor shows: a host's own
+    # files beside them (who a message is for, say) belong to the template.
     defp copy(socket, from, name) do
-      %{files: files} = Enum.find(socket.assigns.templates, &(&1.name == from))
+      case Overrides.copy_template(socket.assigns.root, from, name) do
+        {:ok, paths} ->
+          notified = notify_written(socket, paths)
+          notice = {:info, "Created “#{name}” as a copy of “#{from}”."}
 
-      results =
-        for %{part: part, locale: locale, path: path} <- files do
-          with {:ok, content} <- File.read(path) do
-            Overrides.write(socket.assigns.root, name, part, locale, content)
-          end
-        end
+          socket
+          |> assign(notice: with_notified(notice, notified), draft?: false)
+          |> load_templates()
+          |> select(name)
 
-      notified =
-        notify_written(socket, for({:ok, paths} <- results, path <- paths, do: path))
-
-      notice =
-        case for {:error, reason} <- results, do: reason do
-          [] -> {:info, "Created “#{name}” as a copy of “#{from}”."}
-          reasons -> {:error, "Copied with errors: " <> Enum.map_join(reasons, ", ", &describe/1)}
-        end
-
-      # A source with no part files writes nothing, so the copy is still a draft.
-      socket = socket |> assign(notice: with_notified(notice, notified)) |> load_templates()
-      socket |> assign(draft?: not exists?(socket, name)) |> select(name)
+        {:error, reason} ->
+          notice(socket, :error, "Not copied: " <> describe(reason))
+      end
     end
 
     defp delete(socket) do
@@ -348,6 +357,23 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       end
     end
 
+    # A parent re-render calls the host's preview again only when something it
+    # depends on changed: the callback or variables, the tab, or the files —
+    # another session may have saved them.
+    defp refresh_preview(%{assigns: %{selected: nil}} = socket, _previous_files), do: socket
+
+    defp refresh_preview(socket, previous_files) do
+      if files_of(socket, socket.assigns.selected) != previous_files or
+           Enum.any?(
+             [:root, :preview, :sample_variables, :locale, :contents],
+             &changed?(socket, &1)
+           ) do
+        preview(socket)
+      else
+        socket
+      end
+    end
+
     # A draft that now exists on disk — saved here, or by another session — is
     # an ordinary template again, so deleting it deletes its directory.
     defp settle_draft(socket) do
@@ -378,9 +404,17 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
             part in @parts,
             {:ok, content} <- [File.read(path)],
             into: %{},
-            do: {part, %{content: content, mtime: mtime}}
+            do: {part, file_contents(content, mtime)}
 
       socket |> assign(contents: contents) |> load_missing()
+    end
+
+    # A file put on disk by hand may not be UTF-8, which the page cannot carry:
+    # such a part is shown as broken and is never written over from here.
+    defp file_contents(content, mtime) do
+      if String.valid?(content),
+        do: %{content: content, mtime: mtime},
+        else: %{invalid: true, mtime: mtime}
     end
 
     defp load_missing(socket) do
@@ -409,25 +443,56 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp preview(socket) do
       %{preview: callback, selected: name, locale: locale} = socket.assigns
 
+      # A template with no files (a draft) has nothing to show, and rendering
+      # it would leave cache entries behind for a name that may never be saved.
       result =
-        safely(fn ->
-          case call(callback, [name, locale]) do
-            {:error, reason} -> {:error, describe(reason)}
-            {subject, html} -> {:ok, subject, html}
-            other -> {:error, "unexpected preview result #{inspect(other)}"}
-          end
-        end)
+        if files_of(socket, name) == [] do
+          :unsaved
+        else
+          safely({"preview", callback, [name, locale]}, fn ->
+            callback |> call([name, locale]) |> preview_result()
+          end)
+        end
 
       assign(socket, preview_result: result)
     end
+
+    # Only text is trusted into the page: `{:safe, iodata}` is turned back into
+    # a string so it is escaped like any other — inside `srcdoc` a raw one
+    # would break out of the attribute and the sandbox.
+    defp preview_result({:error, reason}), do: {:error, describe_host(reason)}
+
+    defp preview_result({subject, html}) do
+      with {:ok, subject} <- preview_text(subject),
+           {:ok, html} <- preview_text(html) do
+        {:ok, subject, html}
+      else
+        :error -> {:error, "unexpected preview result"}
+      end
+    end
+
+    defp preview_result(_other), do: {:error, "unexpected preview result"}
+
+    defp preview_text(nil), do: {:ok, nil}
+
+    defp preview_text({:safe, _iodata} = safe),
+      do: preview_text(Phoenix.HTML.safe_to_string(safe))
+
+    defp preview_text(text) when is_binary(text) do
+      if String.valid?(text), do: {:ok, text}, else: :error
+    end
+
+    defp preview_text(_other), do: :error
 
     # The files are written by now, whatever the host's callback does with them.
     defp notify_written(_socket, []), do: :ok
     defp notify_written(%{assigns: %{after_write: nil}}, _paths), do: :ok
 
     defp notify_written(socket, paths) do
-      safely(fn ->
-        call(socket.assigns.after_write, [paths])
+      callback = socket.assigns.after_write
+
+      safely({"after_write", callback, [paths]}, fn ->
+        call(callback, [paths])
         :ok
       end)
     end
@@ -437,14 +502,32 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp with_notified({_kind, message}, {:error, reason}),
       do: {:error, message <> " But the host's after_write failed: " <> reason}
 
-    # A host callback that raises, throws or exits is reported, not a crash.
-    defp safely(fun) do
+    # A host callback that raises, throws or exits is reported, not a crash —
+    # and logged with its stacktrace, since the notice is gone with the page.
+    defp safely(context, fun) do
       fun.()
     rescue
-      exception -> {:error, Exception.message(exception)}
+      exception ->
+        log_failure(context, :error, exception, __STACKTRACE__)
+        {:error, Exception.message(exception)}
     catch
-      kind, reason -> {:error, Exception.format_banner(kind, reason)}
+      kind, reason ->
+        log_failure(context, kind, reason, __STACKTRACE__)
+        {:error, Exception.format_banner(kind, reason)}
     end
+
+    defp log_failure({role, callback, args}, kind, reason, stacktrace) do
+      Logger.error(
+        "#{inspect(__MODULE__)}: the host's #{role} callback " <>
+          "#{describe_callback(callback, length(args))} " <>
+          "failed for #{inspect(args)}:\n" <> Exception.format(kind, reason, stacktrace)
+      )
+    end
+
+    defp describe_callback({module, function}, arity),
+      do: Exception.format_mfa(module, function, arity)
+
+    defp describe_callback(fun, _arity), do: inspect(fun)
 
     defp call({module, function}, args), do: apply(module, function, args)
     defp call(fun, args) when is_function(fun, length(args)), do: apply(fun, args)
@@ -453,7 +536,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     ## Queries
 
-    defp editable?(socket), do: socket.assigns.editable == true
+    # With no usable root there is nothing to write to, whatever the host says.
+    defp editable?(socket), do: socket.assigns.editable == true and is_binary(socket.assigns.root)
 
     defp allowed?(socket, name) do
       is_binary(name) and String.starts_with?(name, socket.assigns.name_prefixes)
@@ -493,6 +577,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       Enum.find_value(tabs(socket), name, fn tab ->
         with path when is_binary(path) <- labels[tab],
              {:ok, label} <- File.read(path),
+             true <- String.valid?(label),
              label when label != "" <- String.trim(label) do
           label
         else
@@ -521,6 +606,15 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp describe(reason) when is_binary(reason), do: reason
     defp describe(reason), do: inspect(reason)
 
+    # A host's own reason is not a file error: shown as it is, not as POSIX.
+    defp describe_host(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+    defp describe_host(reason) when is_binary(reason) do
+      if String.valid?(reason), do: reason, else: inspect(reason)
+    end
+
+    defp describe_host(reason), do: inspect(reason)
+
     ## Rendering
 
     @impl true
@@ -531,11 +625,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
           shared: Enum.filter(assigns.templates, &String.starts_with?(&1.name, "_")),
           tabs: assigns.locales ++ [nil],
           parts: @parts,
-          can_edit: assigns.editable == true
+          can_edit: assigns.editable == true and is_binary(assigns.root)
         )
 
       ~H"""
       <div id={@id} class="flex flex-col gap-4">
+        <div :if={!is_binary(@root)} role="alert" class="alert alert-error">
+          No template directory is configured.
+        </div>
         <div :if={@notice} role="alert" class={notice_class(elem(@notice, 0))}>
           {elem(@notice, 1)}
         </div>
@@ -667,7 +764,10 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
             <dl :if={@selected && !@can_edit} class="flex flex-col gap-3">
               <div :for={part <- @parts}>
                 <dt class="text-sm font-semibold">{part_title(part)}</dt>
-                <dd :if={@contents[part]}>
+                <dd :if={@contents[part] && @contents[part][:invalid]} class="text-sm text-error">
+                  {invalid_utf8()}
+                </dd>
+                <dd :if={@contents[part] && !@contents[part][:invalid]}>
                   <pre class="whitespace-pre-wrap rounded-box bg-base-200 p-3 text-sm">{@contents[part].content}</pre>
                 </dd>
                 <dd :if={!@contents[part]} class="text-sm opacity-60">No file.</dd>
@@ -736,6 +836,17 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     attr :part, :atom, required: true
     attr :file, :map, default: nil
 
+    defp part_field(%{file: %{invalid: true}} = assigns) do
+      ~H"""
+      <div class="flex flex-col gap-1">
+        <span class="text-sm font-semibold">{part_title(@part)}</span>
+        <div id={"#{@id}-invalid"} role="alert" class="alert alert-error text-sm">
+          {invalid_utf8()}
+        </div>
+      </div>
+      """
+    end
+
     defp part_field(assigns) do
       assigns =
         assign(assigns,
@@ -784,6 +895,12 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       """
     end
 
+    defp preview_pane(%{result: :unsaved} = assigns) do
+      ~H"""
+      <p class="text-sm opacity-70">Save the template to preview it.</p>
+      """
+    end
+
     defp preview_pane(%{result: {:error, message}} = assigns) do
       assigns = assign(assigns, message: message)
 
@@ -791,6 +908,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       <div role="alert" class="alert alert-error text-sm">Preview unavailable: {@message}</div>
       """
     end
+
+    defp invalid_utf8, do: "This file is not valid UTF-8 text; fix it on disk to edit it here."
 
     defp part_title(part), do: Map.fetch!(@part_titles, part)
     defp part_hint(part), do: Map.fetch!(@part_hints, part)

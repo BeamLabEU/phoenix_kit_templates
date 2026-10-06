@@ -1,6 +1,7 @@
 defmodule PhoenixKit.Templates.EditorTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
   import Phoenix.ConnTest, only: [build_conn: 0]
   import Phoenix.LiveViewTest
 
@@ -52,6 +53,12 @@ defmodule PhoenixKit.Templates.EditorTest do
 
     def preview("andi_order_broken", _locale), do: {:error, :boom}
     def preview("andi_order_timeout", _locale), do: exit(:timeout)
+    def preview("andi_order_shapeless", _locale), do: %{subject: "S"}
+
+    def preview("andi_order_safe", _locale) do
+      {{:safe, ~s(<b id="pwned-subject">S</b>)},
+       {:safe, ~s("></iframe><b id="pwned">x</b><iframe srcdoc=")}}
+    end
 
     def preview(name, locale) do
       {"Subject of #{name} (#{locale})",
@@ -139,6 +146,31 @@ defmodule PhoenixKit.Templates.EditorTest do
     test "a missing root shows an empty list rather than crashing", %{tmp_dir: root} do
       view = mount_editor(Path.join(root, "missing"))
       assert render(view) =~ "No templates"
+    end
+
+    test "a root that is not a path says so and offers nothing to write", %{tmp_dir: _root} do
+      view = mount_editor(nil)
+
+      assert render(view) =~ "No template directory is configured"
+      refute has_element?(view, "#editor-create")
+
+      render_submit(with_target(view, "#editor"), "create", %{
+        "create" => %{"name" => "andi_order_x", "copy_from" => ""}
+      })
+
+      assert Process.alive?(view.pid)
+    end
+
+    test "a label that is not UTF-8 is not used as the caption", %{tmp_dir: root} do
+      put(root, "andi_order_latin", "label.et.txt", <<"Hinnapakkumine ", 0xE4>>)
+      put(root, "andi_order_latin", "text.et.txt", "Tere")
+      view = mount_editor(root)
+
+      assert view |> element("[phx-value-name=andi_order_latin]") |> render() =~
+               "andi_order_latin"
+
+      assert String.valid?(render(view))
+      refute render(view) =~ "Hinnapakkumine"
     end
   end
 
@@ -243,16 +275,20 @@ defmodule PhoenixKit.Templates.EditorTest do
       refute_received {:after_write, _paths}
     end
 
-    test "a failing after_write is reported, not a crash", %{tmp_dir: root} do
+    test "a failing after_write is reported and logged, not a crash", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root, %{after_write: {Host, :failing_after_write}})
       select(view, "andi_order_offer")
 
-      html = save(view, %{subject: "Uus"})
+      log = capture_log(fn -> assert save(view, %{subject: "Uus"}) =~ "chown failed" end)
 
-      assert html =~ "chown failed"
-      assert File.read!(Path.join([root, "andi_order_offer", "subject.et.txt"])) == "Uus"
+      path = Path.join([root, "andi_order_offer", "subject.et.txt"])
+      assert File.read!(path) == "Uus"
       assert Process.alive?(view.pid)
+      assert log =~ "after_write"
+      assert log =~ "chown failed"
+      assert log =~ path
+      assert log =~ "failing_after_write/1"
     end
 
     test "names a refusal in words, not as a POSIX error", %{tmp_dir: root} do
@@ -278,6 +314,35 @@ defmodule PhoenixKit.Templates.EditorTest do
       save(view, %{subject: "Uus pealkiri"})
 
       assert view |> element("#editor-preview-subject") |> render() =~ "Uus pealkiri"
+    end
+
+    test "a part file that is not UTF-8 is shown read-only and never overwritten",
+         %{tmp_dir: root} do
+      seed(root)
+      latin = <<"Tere ", 0xE4, "\n">>
+      put(root, "andi_order_offer", "text.et.txt", latin)
+      view = mount_editor(root)
+      select(view, "andi_order_offer")
+
+      assert String.valid?(render(view))
+      assert view |> element("#editor-part-text-invalid") |> render() =~ "not valid UTF-8"
+      refute has_element?(view, "#editor-parts textarea[name='parts[text]']")
+
+      save(view, %{subject: "Uus"})
+      render_submit(with_target(view, "#editor"), "save", %{"parts" => %{"text" => ""}})
+
+      assert File.read!(Path.join([root, "andi_order_offer", "subject.et.txt"])) == "Uus"
+      assert File.read!(Path.join([root, "andi_order_offer", "text.et.txt"])) == latin
+    end
+
+    test "a part file that is not UTF-8 is flagged in read-only mode too", %{tmp_dir: root} do
+      seed(root)
+      put(root, "andi_order_offer", "text.et.txt", <<"Tere ", 0xE4>>)
+      view = mount_editor(root, %{editable: false})
+      select(view, "andi_order_offer")
+
+      assert String.valid?(render(view))
+      assert render(view) =~ "not valid UTF-8"
     end
 
     test "flags placeholders the sample variables do not know", %{tmp_dir: root} do
@@ -330,6 +395,45 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert length(files) == length(File.ls!(source))
     end
 
+    test "a copy takes the host's own files beside the parts along", %{tmp_dir: root} do
+      seed(root)
+      put(root, "andi_order_offer", "audience.txt", "partner\n")
+      view = mount_editor(root)
+
+      create(view, "andi_order_copy", "andi_order_offer")
+
+      copy = Path.join(root, "andi_order_copy")
+      assert File.read!(Path.join(copy, "audience.txt")) == "partner\n"
+      assert_received {:after_write, [^copy | files]}
+      assert Path.join(copy, "audience.txt") in files
+    end
+
+    test "a copy whose source is gone says so", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+
+      html =
+        render_submit(with_target(view, "#editor"), "create", %{
+          "create" => %{"name" => "andi_order_x", "copy_from" => "andi_order_gone"}
+        })
+
+      assert html =~ "There is no “andi_order_gone” to copy."
+      refute File.exists?(Path.join(root, "andi_order_x"))
+    end
+
+    test "a copy refused by the write API leaves nothing and says why", %{tmp_dir: root} do
+      seed(root)
+      big = String.duplicate("a", Overrides.max_bytes() + 1)
+      put(root, "andi_order_offer", "html.et.html", big)
+      view = mount_editor(root)
+
+      html = create(view, "andi_order_copy", "andi_order_offer")
+
+      assert html =~ "Not copied: larger than"
+      refute File.exists?(Path.join(root, "andi_order_copy"))
+      refute_received {:after_write, _paths}
+    end
+
     test "refuses a bad name, a name outside the prefixes and an existing name",
          %{tmp_dir: root} do
       seed(root)
@@ -351,7 +455,7 @@ defmodule PhoenixKit.Templates.EditorTest do
       refute File.exists?(Path.join(root, "other_thing"))
     end
 
-    test "a copy of an empty template directory starts as an unsaved draft", %{tmp_dir: root} do
+    test "a copy of an empty template directory is an empty template", %{tmp_dir: root} do
       seed(root)
       File.mkdir_p!(Path.join(root, "andi_order_empty"))
       view = mount_editor(root)
@@ -360,19 +464,24 @@ defmodule PhoenixKit.Templates.EditorTest do
       |> form("#editor-create", create: %{name: "andi_order_copy", copy_from: "andi_order_empty"})
       |> render_submit()
 
-      assert render(view) =~ "not saved yet"
+      copy = Path.join(root, "andi_order_copy")
+      assert File.dir?(copy)
+      assert_received {:after_write, [^copy]}
+      refute render(view) =~ "not saved yet"
       save(view, %{subject: "Uus"})
-      assert File.read!(Path.join([root, "andi_order_copy", "subject.et.txt"])) == "Uus"
+      assert File.read!(Path.join(copy, "subject.et.txt")) == "Uus"
     end
 
-    test "an unsaved draft is not checked against the file cache", %{tmp_dir: root} do
+    test "an unsaved draft is neither checked nor previewed against the file cache",
+         %{tmp_dir: root} do
       # Every distinct lookup is a permanent :persistent_term entry; a name
-      # with no files has nothing to check.
+      # with no files has nothing to check or render.
       seed(root)
-      view = mount_editor(root)
+      view = mount_editor(root, %{preview: :render})
       create(view, "andi_order_new")
 
       assert render(view) =~ "not saved yet"
+      assert view |> element("#editor-preview") |> render() =~ "Save the template to preview it."
 
       refute Enum.any?(:persistent_term.get(), fn
                {{Overrides, :located, [^root], "andi_order_new", _part, _locale}, _} -> true
@@ -470,23 +579,95 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert render(view) =~ "Subject of andi_order_offer (ru)"
     end
 
-    test "shows a host error instead of a preview", %{tmp_dir: root} do
+    test "shows a host error instead of a preview, in the host's words", %{tmp_dir: root} do
       seed(root)
       put(root, "andi_order_broken", "text.et.txt", "x")
       view = mount_editor(root)
       select(view, "andi_order_broken")
 
-      assert render(view) =~ "Preview unavailable"
+      assert view |> element("#editor-preview [role=alert]") |> render() =~
+               "Preview unavailable: boom"
+
+      refute render(view) =~ "POSIX"
       refute has_element?(view, "#editor-preview iframe")
     end
 
-    test "shows a host exit instead of a preview", %{tmp_dir: root} do
+    test "shows a host exit instead of a preview, and logs it", %{tmp_dir: root} do
       seed(root)
       put(root, "andi_order_timeout", "text.et.txt", "x")
       view = mount_editor(root)
-      select(view, "andi_order_timeout")
+
+      log = capture_log(fn -> select(view, "andi_order_timeout") end)
 
       assert render(view) =~ "Preview unavailable"
+      assert log =~ "preview"
+      assert log =~ "timeout"
+      assert log =~ "Host.preview/2"
+    end
+
+    test "escapes safe tuples from the host instead of trusting them", %{tmp_dir: root} do
+      seed(root)
+      put(root, "andi_order_safe", "text.et.txt", "x")
+      view = mount_editor(root)
+      select(view, "andi_order_safe")
+
+      refute has_element?(view, "#pwned")
+      refute has_element?(view, "#pwned-subject")
+      assert view |> element("#editor-preview iframe") |> render() =~ "pwned"
+      assert view |> element("#editor-preview-subject") |> render() =~ "pwned-subject"
+    end
+
+    test "shows a result of the wrong shape as an error, not a crash", %{tmp_dir: root} do
+      seed(root)
+      put(root, "andi_order_shapeless", "text.et.txt", "x")
+      view = mount_editor(root)
+      select(view, "andi_order_shapeless")
+
+      assert render(view) =~ "Preview unavailable: unexpected preview result"
+      assert Process.alive?(view.pid)
+    end
+
+    test "follows a new preview callback from the host", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "andi_order_offer")
+
+      send(view.pid, {:put, %{preview: fn name, _locale -> {"New look of #{name}", nil} end}})
+
+      assert view |> element("#editor-preview-subject") |> render() =~
+               "New look of andi_order_offer"
+    end
+
+    test "an unrelated re-render does not call the preview again", %{tmp_dir: root} do
+      seed(root)
+      test_pid = self()
+      view = mount_editor(root)
+      select(view, "andi_order_offer")
+
+      counting = fn name, locale ->
+        send(test_pid, {:previewed, name})
+        Host.preview(name, locale)
+      end
+
+      send(view.pid, {:put, %{preview: counting}})
+      render(view)
+      assert_received {:previewed, "andi_order_offer"}
+
+      send(view.pid, {:put, %{tick: 1}})
+      render(view)
+
+      refute_received {:previewed, _name}
+    end
+
+    test "shows a file another session changed on the next update", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: :render})
+      select(view, "andi_order_offer")
+
+      {:ok, _} = Overrides.write(root, "andi_order_offer", :subject, "et", "From elsewhere")
+      send(view.pid, {:put, %{tick: 1}})
+
+      assert view |> element("#editor-preview-subject") |> render() =~ "From elsewhere"
     end
 
     test "no preview pane without a preview callback", %{tmp_dir: root} do
