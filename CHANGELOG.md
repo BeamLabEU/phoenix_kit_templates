@@ -5,15 +5,18 @@
 ### Added
 
 - **A write API on one root:** `Overrides.write/5`, `delete/4`,
-  `delete_template/2`, `list/1`, plus `valid_name?/1` and `max_bytes/0`. Same
-  layout, name and locale rules as reading, but a malformed locale is refused
-  instead of falling back; the path stays inside the root (symlinks included);
-  writes are atomic (synced, then renamed; a replaced file keeps its
-  permissions) and capped at 256 KiB of UTF-8; the cache is reset for the
-  root after every change, a failed `delete_template/2` included. Errors are
-  `{:error, reason}`. `write/5` returns the paths it created — the template
-  directory too when the write is its first part file — so a host can fix
-  their ownership.
+  `delete_template/2`, `copy_template/3`, `list/1`, plus `valid_name?/1` and
+  `max_bytes/0`. Same layout, name and locale rules as reading, but a
+  malformed locale is refused instead of falling back; the path stays inside
+  the root (symlinks included); writes are atomic (synced, then renamed; a
+  replaced file keeps its permissions) and capped at 256 KiB of UTF-8; the
+  cache is reset for the root after every change, a failed
+  `delete_template/2` included. Errors are `{:error, reason}`. `write/5`
+  returns the paths it created — the template directory too when the write
+  is its first part file — so a host can fix their ownership.
+  `copy_template/3` copies every regular file of a template directory, a
+  host's own files beside the parts included, through a hidden directory
+  renamed into place, and returns the new directory and its files.
 - **A `label` part** (`label[.locale].txt`) that the write API and `list/1`
   know and rendering never reads — a caption for an editor's list.
 - **`PhoenixKit.Templates.Editor`**, a `Phoenix.LiveComponent` for editing
@@ -23,8 +26,13 @@
   iframe, read-only mode, and an `after_write` callback. `name_prefixes` is
   checked on every write, an unsaved draft included; a `preview` or
   `after_write` that raises, throws or exits is shown as an error, not a
-  crash. Compiled only when `phoenix_live_view` is present; it is an optional
-  dependency, and nothing depends on PhoenixKit.
+  crash, and logged with its stacktrace. A preview must return strings or
+  `nil` (a `{:safe, _}` is escaped, anything else is an error); it is not
+  called for a template with no files, and is called again when the host
+  re-renders with a new callback, new variables or changed files. A file that
+  is not UTF-8 is shown read-only and never written over. Compiled only when
+  `phoenix_live_view` is present; it is an optional dependency, and nothing
+  depends on PhoenixKit.
 
 ### Fixed
 

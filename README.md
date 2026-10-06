@@ -235,6 +235,7 @@ alias PhoenixKit.Templates.Overrides
 
 {:ok, paths} = Overrides.write(root, "order_offer", :subject, "et", "Pakkumine {{order_number}}")
 :ok = Overrides.delete(root, "order_offer", :subject, "et")
+{:ok, paths} = Overrides.copy_template(root, "order_offer", "order_offer_copy")
 :ok = Overrides.delete_template(root, "order_offer")
 Overrides.list(root)
 #=> [%{name: "order_offer", files: [%{part: :text, locale: "et", path: "…", mtime: ~U[…]}]}]
@@ -254,6 +255,9 @@ Overrides.list(root)
 - Every refusal is `{:error, reason}`. `write/5` returns the paths it created
   (the template directory first when this is its first part file, then the
   file) — for example, to fix their owner.
+- `copy_template/3` copies every regular file in the directory, not only the
+  parts — a host's own files beside them travel with the copy — and returns
+  the new directory and its files.
 
 ### Editor component
 
@@ -281,12 +285,13 @@ group of their own), edits `label`, `subject`, `text`, `markdown` and `html`
 per language, creates a template empty or as a copy, and deletes one after a
 confirmation. `name_prefixes` limits what it may write as well as what it
 shows; `editable={false}` makes it read-only. `preview(name, locale)` returns
-`{subject, html}`, shown in an `<iframe sandbox>` that cannot run scripts.
-`after_write` receives the paths a save or copy created; if it or `preview`
-fails, the editor shows the error instead of crashing. `sample_variables` is
-one map for every template, so include the layout's variables if headers and
-footers use them. Each language tab is saved on its own. The interface text is
-English. The full list of attributes is in the module docs.
+`{subject, html}` as strings (or `nil`), shown in an `<iframe sandbox>` that
+cannot run scripts. `after_write` receives the paths a save or copy created;
+if it or `preview` fails, the editor shows the error instead of crashing and
+logs it. `sample_variables` is one map for every template, so include the
+layout's variables if headers and footers use them. Each language tab is saved
+on its own. The interface text is English. The full list of attributes is in
+the module docs.
 
 ## No runtime dependencies
 
