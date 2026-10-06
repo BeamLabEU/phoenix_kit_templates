@@ -162,7 +162,8 @@ editor's routes (`…/templates/:slug`), and `display_name` labelled its list
 view. With no editor and no routes, a second identifier addresses nothing. A
 human-readable label, if one is ever wanted, is a Gettext call in the sending
 package rather than a stored column — the same place its subject and body
-already live.
+already live. A host that edits its own files can keep one as a `label` file
+next to them (see below); rendering never reads it.
 
 ## Placeholders
 
@@ -221,10 +222,73 @@ See `PhoenixKit.Templates.Substitution` for the parsing rules and a table of
 boundary cases (adjacent braces, stray single braces, CSS inside `html`, and
 so on).
 
+## Editing override files
+
+Override files normally arrive through the host's repository. A host that wants
+to edit its own from an admin screen gets a write API on one root, and an
+optional editor component on top of it.
+
+### Write API
+
+```elixir
+alias PhoenixKit.Templates.Overrides
+
+{:ok, paths} = Overrides.write(root, "order_offer", :subject, "et", "Pakkumine {{order_number}}")
+:ok = Overrides.delete(root, "order_offer", :subject, "et")
+:ok = Overrides.delete_template(root, "order_offer")
+Overrides.list(root)
+#=> [%{name: "order_offer", files: [%{part: :text, locale: "et", path: "…", mtime: ~U[…]}]}]
+```
+
+- Same layout and the same name and locale rules as reading — but a write
+  **refuses** what a read would fall back from: a malformed locale is
+  `{:error, :invalid_locale}`, not the locale-less file. `layout` takes no
+  locale.
+- One extra part, **`label`** (`label[.locale].txt`), a caption for an editor's
+  list. Rendering never reads it.
+- The path stays inside the root, symlinks included; the root must exist.
+- Atomic (temporary file, then rename), at most 256 KiB of UTF-8 per file.
+- Resets the cache for the root, so the next render sees the change at once.
+  Pass the same root string the renderer gets in `:paths`.
+- Every refusal is `{:error, reason}`. `write/5` returns the paths it created
+  (a new template directory first, then the file) — for example, to fix
+  their owner.
+
+### Editor component
+
+`PhoenixKit.Templates.Editor` is a `Phoenix.LiveComponent`, compiled only when
+the host has `phoenix_live_view` (an optional dependency of this package). It
+does not depend on PhoenixKit; its markup uses daisyUI classes, so a Tailwind
+host adds this package's `lib/` to its sources.
+
+```heex
+<.live_component
+  module={PhoenixKit.Templates.Editor}
+  id="email-templates"
+  root={MyApp.EmailTemplates.root()}
+  editable={true}
+  name_prefixes={["order_", "_header-shop", "_footer-shop"]}
+  locales={["et", "ru", "en"]}
+  preview={{MyApp.EmailPreview, :preview}}
+  sample_variables={%{"order_number" => "37"}}
+  after_write={{MyApp.EmailTemplates, :after_write}}
+/>
+```
+
+It lists the templates under `name_prefixes` (shared `_`-prefixed parts in a
+group of their own), edits `label`, `subject`, `text`, `markdown` and `html`
+per language, creates a template empty or as a copy, and deletes one after a
+confirmation. `name_prefixes` limits what it may write as well as what it
+shows; `editable={false}` makes it read-only. `preview(name, locale)` returns
+`{subject, html}`, shown in an `<iframe sandbox>` that cannot run scripts.
+`after_write` receives the paths a save or copy created. The interface text is
+English. The full list of attributes is in the module docs.
+
 ## No runtime dependencies
 
 Deliberate: `phoenix_kit` depends on this package, so anything pulled in here
-lands upstream of the entire tree.
+lands upstream of the entire tree. `phoenix_live_view` is optional and used
+only by the editor component.
 
 ## License
 

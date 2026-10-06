@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- **A write API on one root:** `Overrides.write/5`, `delete/4`,
+  `delete_template/2`, `list/1`, plus `valid_name?/1` and `max_bytes/0`. Same
+  layout, name and locale rules as reading, but a malformed locale is refused
+  instead of falling back; the path stays inside the root (symlinks included);
+  writes are atomic and capped at 256 KiB of UTF-8; the cache is reset for the
+  root after every change. Errors are `{:error, reason}`. `write/5` returns
+  the paths it created so a host can fix their ownership.
+- **A `label` part** (`label[.locale].txt`) that the write API and `list/1`
+  know and rendering never reads — a caption for an editor's list.
+- **`PhoenixKit.Templates.Editor`**, a `Phoenix.LiveComponent` for editing
+  those files: list (shared `_`-prefixed parts grouped apart), per-language
+  editing of `label`/`subject`/`text`/`markdown`/`html`, create empty or as a
+  copy, delete with confirmation, a host preview in a script-less sandboxed
+  iframe, read-only mode, and an `after_write` callback. Compiled only when
+  `phoenix_live_view` is present; it is an optional dependency, and nothing
+  depends on PhoenixKit.
+
 ### Fixed
 
 - Subject normalization no longer takes quadratic time on long whitespace runs
