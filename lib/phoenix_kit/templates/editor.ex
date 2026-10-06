@@ -43,15 +43,21 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         `name` may be a shared part such as `_header-x`). It returns
         `{subject, html}` or `{:error, reason}`. The HTML is shown in an
         `<iframe sandbox srcdoc>` without `allow-scripts`, so nothing in an
-        edited template runs in the admin page. An exception is shown as an
-        error rather than crashing the page. No callback, no preview pane.
+        edited template runs in the admin page. An exception, throw or exit
+        is shown as an error rather than crashing the page. No callback, no
+        preview pane.
       * `:sample_variables` — the variables a template may use, as a map of
         name to a sample value. Listed beside the editor, and any placeholder
-        in the current template that is not among them is flagged.
+        in the current template that is not among them is flagged. The one map
+        applies to every template, shared parts included, so a host whose
+        headers and footers use its layout's variables (`{{site_url}}` and
+        the like) lists those too.
       * `:after_write` — `{module, function}` or a 1-arity function, called
         with the list of paths created by a save or a copy (a new template
         directory first, then files) — for example to change their owner.
-        This package never does.
+        This package never does. The files are written before it is called;
+        if it raises, throws or exits, that is shown as an error after the
+        save's own result.
 
     ## What it does
 
@@ -61,9 +67,10 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       * Edits the `label`, `subject`, `text`, `markdown` and `html` parts per
         language tab. Saving writes the parts that changed; a part saved empty
         has its file deleted, so the message falls back to the next file in
-        line. Line breaks are stored as `\\n`.
+        line. Line breaks are stored as `\\n`. Each tab is saved on its own:
+        switching tabs or templates, or a reconnect, drops unsaved changes.
       * Creates a template empty (it exists on disk once its first part is
-        saved) or as a copy of a visible one.
+        saved) or as a copy of a listed one.
       * Deletes a template, after a confirmation.
 
     The interface text is plain English: a host Gettext backend cannot be
@@ -124,7 +131,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       socket =
         if editable?(socket), do: socket, else: assign(socket, confirm_delete?: false)
 
-      {:ok, socket |> load_templates() |> keep_selection()}
+      {:ok, socket |> load_templates() |> settle_draft() |> keep_selection()}
     end
 
     @impl true
@@ -208,7 +215,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
       paths = for {_part, {:ok, paths}} <- results, path <- paths, do: path
       errors = for {part, {:error, reason}} <- results, do: {part, reason}
-      notify_written(socket, paths)
+      notified = notify_written(socket, paths)
 
       notice =
         cond do
@@ -218,9 +225,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         end
 
       socket
-      |> assign(notice: notice)
+      |> assign(notice: with_notified(notice, notified))
       |> load_templates()
-      |> assign(draft?: socket.assigns.draft? and not exists?(socket, name))
+      |> settle_draft()
       |> load_contents()
       |> preview()
     end
@@ -268,7 +275,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         copy_from == "" ->
           socket |> assign(notice: nil, draft?: true) |> select(name)
 
-        visible?(socket, copy_from) ->
+        # Only a template on disk has files to copy; a draft has none.
+        exists?(socket, copy_from) ->
           copy(socket, copy_from, name)
 
         true ->
@@ -286,7 +294,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
           end
         end
 
-      notify_written(socket, for({:ok, paths} <- results, path <- paths, do: path))
+      notified =
+        notify_written(socket, for({:ok, paths} <- results, path <- paths, do: path))
 
       notice =
         case for {:error, reason} <- results, do: reason do
@@ -295,7 +304,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         end
 
       # A source with no part files writes nothing, so the copy is still a draft.
-      socket = socket |> assign(notice: notice) |> load_templates()
+      socket = socket |> assign(notice: with_notified(notice, notified)) |> load_templates()
       socket |> assign(draft?: not exists?(socket, name)) |> select(name)
     end
 
@@ -339,6 +348,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       end
     end
 
+    # A draft that now exists on disk — saved here, or by another session — is
+    # an ordinary template again, so deleting it deletes its directory.
+    defp settle_draft(socket) do
+      assign(socket,
+        draft?: socket.assigns.draft? and not exists?(socket, socket.assigns.selected)
+      )
+    end
+
     defp reset_locale(socket),
       do: assign(socket, locale: initial_locale(socket, socket.assigns.selected))
 
@@ -366,22 +383,25 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       socket |> assign(contents: contents) |> load_missing()
     end
 
-    defp load_missing(%{assigns: %{sample_variables: variables}} = socket)
-         when map_size(variables) == 0,
-         do: assign(socket, missing: [])
-
     defp load_missing(socket) do
       %{root: root, selected: name, locale: locale, sample_variables: variables} = socket.assigns
 
-      missing =
-        name
-        |> Templates.missing_variables(%{}, variables, locale: locale, paths: [root])
-        |> Map.values()
-        |> List.flatten()
-        |> Enum.uniq()
-        |> Enum.sort()
+      # A template with no files (a draft) has nothing to check, and looking it
+      # up would leave cache entries behind for a name that may never be saved.
+      if variables == %{} or files_of(socket, name) == [] do
+        assign(socket, missing: [])
+      else
+        assign(socket, missing: missing_variables(name, variables, locale, root))
+      end
+    end
 
-      assign(socket, missing: missing)
+    defp missing_variables(name, variables, locale, root) do
+      name
+      |> Templates.missing_variables(%{}, variables, locale: locale, paths: [root])
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.uniq()
+      |> Enum.sort()
     end
 
     defp preview(%{assigns: %{preview: nil}} = socket), do: assign(socket, preview_result: nil)
@@ -390,22 +410,41 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       %{preview: callback, selected: name, locale: locale} = socket.assigns
 
       result =
-        try do
+        safely(fn ->
           case call(callback, [name, locale]) do
             {:error, reason} -> {:error, describe(reason)}
             {subject, html} -> {:ok, subject, html}
             other -> {:error, "unexpected preview result #{inspect(other)}"}
           end
-        rescue
-          exception -> {:error, Exception.message(exception)}
-        end
+        end)
 
       assign(socket, preview_result: result)
     end
 
+    # The files are written by now, whatever the host's callback does with them.
     defp notify_written(_socket, []), do: :ok
     defp notify_written(%{assigns: %{after_write: nil}}, _paths), do: :ok
-    defp notify_written(socket, paths), do: call(socket.assigns.after_write, [paths])
+
+    defp notify_written(socket, paths) do
+      safely(fn ->
+        call(socket.assigns.after_write, [paths])
+        :ok
+      end)
+    end
+
+    defp with_notified(notice, :ok), do: notice
+
+    defp with_notified({_kind, message}, {:error, reason}),
+      do: {:error, message <> " But the host's after_write failed: " <> reason}
+
+    # A host callback that raises, throws or exits is reported, not a crash.
+    defp safely(fun) do
+      fun.()
+    rescue
+      exception -> {:error, Exception.message(exception)}
+    catch
+      kind, reason -> {:error, Exception.format_banner(kind, reason)}
+    end
 
     defp call({module, function}, args), do: apply(module, function, args)
     defp call(fun, args) when is_function(fun, length(args)), do: apply(fun, args)
@@ -422,8 +461,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     defp writable?(socket, name), do: editable?(socket) and visible?(socket, name)
 
+    # Listed templates are already filtered by prefix; a draft is checked here,
+    # since the host may have changed the prefixes since it was created.
     defp visible?(socket, name) do
-      exists?(socket, name) or (socket.assigns.draft? and name == socket.assigns.selected)
+      exists?(socket, name) or
+        (socket.assigns.draft? and name == socket.assigns.selected and allowed?(socket, name))
     end
 
     defp exists?(socket, name), do: Enum.any?(socket.assigns.templates, &(&1.name == name))
@@ -463,14 +505,17 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     defp describe_errors(errors) do
       Enum.map_join(errors, "; ", fn {part, reason} ->
-        "#{@part_titles[part]} is #{describe(reason)}"
+        "#{@part_titles[part]}: #{describe(reason)}"
       end)
     end
 
     defp describe(:too_large), do: "larger than #{div(Overrides.max_bytes(), 1024)} KiB"
     defp describe(:invalid_content), do: "not valid UTF-8 text"
-    defp describe(:invalid_root), do: "in a template directory that does not exist"
-    defp describe(:unsafe_path), do: "outside the template directory"
+    defp describe(:invalid_name), do: "not a valid template name"
+    defp describe(:invalid_part), do: "not a part this editor writes"
+    defp describe(:invalid_locale), do: "not a valid language tag"
+    defp describe(:invalid_root), do: "the template directory does not exist"
+    defp describe(:unsafe_path), do: "the path leads outside the template directory"
     defp describe(:enoent), do: "already gone"
     defp describe(reason) when is_atom(reason), do: reason |> :file.format_error() |> to_string()
     defp describe(reason) when is_binary(reason), do: reason
@@ -591,6 +636,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
                 phx-click="locale"
                 phx-value-locale={tab || ""}
                 phx-target={@myself}
+                aria-selected={to_string(tab == @locale)}
                 class={["tab", tab == @locale && "tab-active"]}
                 title={if(is_nil(tab), do: "Used for any language without its own file")}
               >
@@ -611,7 +657,10 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
                 part={part}
                 file={@contents[part]}
               />
-              <p class="text-xs opacity-70">A part saved empty has its file deleted.</p>
+              <p class="text-xs opacity-70">
+                Each language is saved on its own: switching tabs or templates drops unsaved
+                changes. A part saved empty has its file deleted.
+              </p>
               <button type="submit" class="btn btn-primary btn-sm w-fit">Save</button>
             </form>
 
@@ -653,11 +702,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       """
     end
 
-    attr(:id, :string, required: true)
-    attr(:title, :string, required: true)
-    attr(:templates, :list, required: true)
-    attr(:selected, :string, default: nil)
-    attr(:myself, :any, required: true)
+    attr :id, :string, required: true
+    attr :title, :string, required: true
+    attr :templates, :list, required: true
+    attr :selected, :string, default: nil
+    attr :myself, :any, required: true
 
     defp template_group(assigns) do
       ~H"""
@@ -683,9 +732,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       """
     end
 
-    attr(:id, :string, required: true)
-    attr(:part, :atom, required: true)
-    attr(:file, :map, default: nil)
+    attr :id, :string, required: true
+    attr :part, :atom, required: true
+    attr :file, :map, default: nil
 
     defp part_field(assigns) do
       assigns =
@@ -713,8 +762,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       """
     end
 
-    attr(:id, :string, required: true)
-    attr(:result, :any, required: true)
+    attr :id, :string, required: true
+    attr :result, :any, required: true
 
     defp preview_pane(%{result: {:ok, subject, html}} = assigns) do
       assigns = assign(assigns, subject: subject, html: html)
@@ -723,14 +772,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       <p id={"#{@id}-preview-subject"} class="text-sm">
         <span class="opacity-60">Subject:</span> {@subject}
       </p>
+      <%!-- bg-white, not a theme colour: an email is drawn on white whatever the admin theme. --%>
       <iframe
         :if={@html}
         sandbox=""
         srcdoc={@html}
         title="Preview"
         class="h-[32rem] w-full rounded-box border border-base-300 bg-white"
-      >
-      </iframe>
+      ></iframe>
       <p :if={!@html} class="text-sm opacity-70">No HTML.</p>
       """
     end

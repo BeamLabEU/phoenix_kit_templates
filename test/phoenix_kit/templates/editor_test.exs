@@ -12,14 +12,15 @@ defmodule PhoenixKit.Templates.EditorTest do
 
   defmodule Host do
     # A host LiveView rendering the editor the way an application would. The
-    # test process gets every after_write call as a message.
+    # test process gets every after_write call as a message, unless the test
+    # passes an after_write of its own.
     use Phoenix.LiveView
 
     @impl true
     def mount(_params, %{"opts" => opts, "test_pid" => test_pid}, socket) do
       opts =
         opts
-        |> Map.put(:after_write, fn paths -> send(test_pid, {:after_write, paths}) end)
+        |> Map.put_new(:after_write, fn paths -> send(test_pid, {:after_write, paths}) end)
         |> maybe_render_preview()
 
       {:ok, assign(socket, opts: opts)}
@@ -50,11 +51,14 @@ defmodule PhoenixKit.Templates.EditorTest do
     defp maybe_render_preview(opts), do: opts
 
     def preview("andi_order_broken", _locale), do: {:error, :boom}
+    def preview("andi_order_timeout", _locale), do: exit(:timeout)
 
     def preview(name, locale) do
       {"Subject of #{name} (#{locale})",
        "<p>Hello from #{name}</p><script>window.parent.alert(1)</script>"}
     end
+
+    def failing_after_write(_paths), do: raise("chown failed")
   end
 
   defp put(root, name, file, content) do
@@ -104,6 +108,10 @@ defmodule PhoenixKit.Templates.EditorTest do
     view |> form("#editor-parts", parts: parts) |> render_submit()
   end
 
+  defp create(view, name, copy_from \\ "") do
+    view |> form("#editor-create", create: %{name: name, copy_from: copy_from}) |> render_submit()
+  end
+
   describe "the list" do
     test "shows only names under the prefixes, shared parts in their own group",
          %{tmp_dir: root} do
@@ -147,6 +155,9 @@ defmodule PhoenixKit.Templates.EditorTest do
 
       assert view |> element("#editor-parts textarea[name='parts[subject]']") |> render() =~
                "Предложение"
+
+      assert has_element?(view, "#editor [role=tab][aria-selected=true]", "ru")
+      refute has_element?(view, "#editor [role=tab][aria-selected=true]", "et")
 
       for part <- ~w(label subject text markdown html) do
         assert has_element?(view, "#editor-parts textarea[name='parts[#{part}]']")
@@ -230,6 +241,30 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert html =~ "larger than"
       refute File.exists?(Path.join([root, "andi_order_offer", "html.et.html"]))
       refute_received {:after_write, _paths}
+    end
+
+    test "a failing after_write is reported, not a crash", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{after_write: {Host, :failing_after_write}})
+      select(view, "andi_order_offer")
+
+      html = save(view, %{subject: "Uus"})
+
+      assert html =~ "chown failed"
+      assert File.read!(Path.join([root, "andi_order_offer", "subject.et.txt"])) == "Uus"
+      assert Process.alive?(view.pid)
+    end
+
+    test "names a refusal in words, not as a POSIX error", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{locales: ["e"]})
+      select(view, "andi_order_offer")
+      tab(view, "e")
+
+      html = save(view, %{subject: "Uus"})
+
+      assert html =~ "Subject: not a valid language tag"
+      refute html =~ "POSIX"
     end
 
     test "a preview right after saving shows the saved content", %{tmp_dir: root} do
@@ -330,6 +365,48 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert File.read!(Path.join([root, "andi_order_copy", "subject.et.txt"])) == "Uus"
     end
 
+    test "an unsaved draft is not checked against the file cache", %{tmp_dir: root} do
+      # Every distinct lookup is a permanent :persistent_term entry; a name
+      # with no files has nothing to check.
+      seed(root)
+      view = mount_editor(root)
+      create(view, "andi_order_new")
+
+      assert render(view) =~ "not saved yet"
+
+      refute Enum.any?(:persistent_term.get(), fn
+               {{Overrides, :located, [^root], "andi_order_new", _part, _locale}, _} -> true
+               _other -> false
+             end)
+    end
+
+    test "a draft cannot be the source of a copy", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      create(view, "andi_order_draft")
+
+      render_submit(with_target(view, "#editor"), "create", %{
+        "create" => %{"name" => "andi_order_copy", "copy_from" => "andi_order_draft"}
+      })
+
+      assert Process.alive?(view.pid)
+      refute File.exists?(Path.join(root, "andi_order_copy"))
+    end
+
+    test "a draft another session saved meanwhile is no longer a draft", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      create(view, "andi_order_new")
+
+      put(root, "andi_order_new", "subject.et.txt", "From elsewhere")
+      send(view.pid, {:put, %{sample_variables: %{"order_number" => "38"}}})
+
+      refute render(view) =~ "not saved yet"
+      view |> element("#editor-delete") |> render_click()
+      view |> element("#editor-delete-confirm") |> render_click()
+      refute File.exists?(Path.join(root, "andi_order_new"))
+    end
+
     test "a malformed create event is ignored", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root)
@@ -403,6 +480,15 @@ defmodule PhoenixKit.Templates.EditorTest do
       refute has_element?(view, "#editor-preview iframe")
     end
 
+    test "shows a host exit instead of a preview", %{tmp_dir: root} do
+      seed(root)
+      put(root, "andi_order_timeout", "text.et.txt", "x")
+      view = mount_editor(root)
+      select(view, "andi_order_timeout")
+
+      assert render(view) =~ "Preview unavailable"
+    end
+
     test "no preview pane without a preview callback", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root, %{preview: nil})
@@ -474,6 +560,18 @@ defmodule PhoenixKit.Templates.EditorTest do
 
       assert File.read!(Path.join([root, "secret_other", "text.txt"])) == "not for this editor\n"
       refute_received {:after_write, _paths}
+    end
+
+    test "a draft whose name the host no longer allows cannot be saved", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      create(view, "andi_order_new")
+
+      send(view.pid, {:put, %{name_prefixes: ["zzz_"]}})
+      render_submit(with_target(view, "#editor"), "save", %{"parts" => %{"text" => "x"}})
+
+      refute File.exists?(Path.join(root, "andi_order_new"))
+      refute render(view) =~ "andi_order_new"
     end
 
     test "an unknown locale is not a tab", %{tmp_dir: root} do
