@@ -257,6 +257,30 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
       assert Overrides.delete(root, "alert", :text, "et") == {:error, :enoent}
     end
 
+    test "removes the template directory along with its last file", %{tmp_dir: root} do
+      # An empty directory is not tracked by git: kept, it would be a template
+      # here and none after a checkout.
+      {:ok, _} = Overrides.write(root, "alert", :text, "et", "et")
+
+      assert Overrides.delete(root, "alert", :text, "et") == :ok
+
+      refute File.exists?(Path.join(root, "alert"))
+      assert Overrides.list(root) == []
+    end
+
+    test "keeps the template directory while it holds any other file", %{tmp_dir: root} do
+      {:ok, _} = Overrides.write(root, "alert", :text, "et", "et")
+      {:ok, _} = Overrides.write(root, "alert", :text, nil, "plain")
+      {:ok, _} = Overrides.write(root, "notice", :text, nil, "plain")
+      File.write!(file(root, "notice", "audience.txt"), "partner\n")
+
+      assert Overrides.delete(root, "alert", :text, "et") == :ok
+      assert Overrides.delete(root, "notice", :text, nil) == :ok
+
+      assert File.ls!(Path.join(root, "alert")) == ["text.txt"]
+      assert File.ls!(Path.join(root, "notice")) == ["audience.txt"]
+    end
+
     test "validates exactly like write/5", %{tmp_dir: root} do
       File.write!(Path.join(root, "secret.txt"), "top secret")
 

@@ -252,6 +252,25 @@ defmodule PhoenixKit.Templates.EditorTest do
                "Fallback subject"
     end
 
+    test "emptying every part leaves an unsaved template, not an empty directory",
+         %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "_header-shop")
+
+      html = save(view, %{html: ""})
+
+      assert html =~ "Saved."
+      refute File.exists?(Path.join(root, "_header-shop"))
+      assert render(view) =~ "not saved yet"
+      refute has_element?(view, "[phx-value-name=_header-shop]")
+
+      save(view, %{html: "<p>Back</p>"})
+
+      assert File.read!(Path.join([root, "_header-shop", "html.html"])) == "<p>Back</p>"
+      refute render(view) =~ "not saved yet"
+    end
+
     test "stores browser CRLF line breaks as LF", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root)

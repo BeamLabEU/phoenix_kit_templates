@@ -246,13 +246,20 @@ defmodule PhoenixKit.Templates.Overrides do
   Deletes one part file — exactly the one `write/5` would write for the same
   arguments, with no locale fallback — and resets the cache for `root`.
 
+  When that was the last file in the template directory, the directory goes
+  too: git does not track an empty directory, so keeping it would leave a
+  template that exists here and not after a checkout. A directory still
+  holding anything else, a host's own file included, stays.
+
   A missing file is `{:error, :enoent}`.
   """
   @spec delete(Path.t(), String.t(), writable_part(), String.t() | nil) ::
           :ok | {:error, error()}
   def delete(root, name, part, locale) do
-    with {:ok, _dir, path} <- target(root, name, part, locale),
+    with {:ok, dir, path} <- target(root, name, part, locale),
          :ok <- File.rm(path) do
+      # Refused, harmlessly, while anything is left in it.
+      _ = File.rmdir(dir)
       reset_cache([root])
     end
   end

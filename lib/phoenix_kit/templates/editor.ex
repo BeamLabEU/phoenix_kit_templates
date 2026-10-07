@@ -73,7 +73,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       * Edits the `label`, `subject`, `text`, `markdown` and `html` parts per
         language tab. Saving writes the parts that changed; a part saved empty
         has its file deleted, so the message falls back to the next file in
-        line. Line breaks are stored as `\\n`. Each tab is saved on its own:
+        line — and a template left with no files loses its directory, staying
+        open as an unsaved one. Line breaks are stored as `\\n`. Each tab is saved on its own:
         switching tabs or templates, or a reconnect, drops unsaved changes.
       * Creates a template empty (it exists on disk once its first part is
         saved) or as a copy of a listed one — every file in its directory,
@@ -241,7 +242,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       socket
       |> assign(notice: with_notified(save_notice(saved, errors), notified))
       |> load_templates()
-      |> settle_draft()
+      |> redraft()
       |> load_contents()
       |> preview()
     end
@@ -394,6 +395,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       assign(socket,
         draft?: socket.assigns.draft? and not exists?(socket, socket.assigns.selected)
       )
+    end
+
+    # After a save the template is a draft exactly when it has no directory:
+    # a first save makes it an ordinary template, and emptying its last file
+    # (`Overrides.delete/4` removes the directory with it) makes it a draft
+    # again, still selected and still writable.
+    defp redraft(socket) do
+      assign(socket, draft?: not exists?(socket, socket.assigns.selected))
     end
 
     defp reset_locale(socket),
