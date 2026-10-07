@@ -112,8 +112,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         open as an unsaved one. Line breaks are stored as `\\n`. A save that
         is partly refused (one part too large, say) names the parts it saved
         and the ones it did not, and what was typed into those stays in the
-        form to be fixed and saved again. Each tab is saved on its own: switching tabs
-        or templates, or a reconnect, drops unsaved changes.
+        form to be fixed and saved again. Each tab is saved on its own:
+        switching to another tab or template, or a reconnect, drops unsaved
+        changes.
       * A part is written only when the user changed it from what the form
         was given (on opening the template or tab, or after a save): a part
         left alone is never written back over another session's change made
@@ -210,11 +211,15 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       {:ok, refresh_preview(socket, previous_files)}
     end
 
+    # Clicking the template or tab already open switches nothing: the form
+    # keeps what a conversion put in it, as the browser keeps what was typed.
     @impl true
+    def handle_event("select", %{"name" => name}, %{assigns: %{selected: name}} = socket),
+      do: {:noreply, socket}
+
     def handle_event("select", %{"name" => name}, socket) do
       if visible?(socket, name) do
-        draft? = socket.assigns.draft? and name == socket.assigns.selected
-        {:noreply, socket |> assign(notice: nil, draft?: draft?) |> select(name)}
+        {:noreply, socket |> assign(notice: nil, draft?: false) |> select(name)}
       else
         {:noreply, socket}
       end
@@ -223,7 +228,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     def handle_event("locale", %{"locale" => locale}, socket) do
       locale = if locale == "", do: nil, else: locale
 
-      if socket.assigns.selected && locale in tabs(socket.assigns) do
+      if socket.assigns.selected && locale != socket.assigns.locale &&
+           locale in tabs(socket.assigns) do
         {:noreply, socket |> assign(locale: locale, notice: nil) |> load_contents() |> preview()}
       else
         {:noreply, socket}

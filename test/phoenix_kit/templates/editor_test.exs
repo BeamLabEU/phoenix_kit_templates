@@ -1388,6 +1388,24 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert field(view, :text) == "Tere!\n\n{{documents_list}}\n"
     end
 
+    test "the open tab or template clicked again keeps the form", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      convert(view, "to_text", %{markdown: "**Tere**", subject: "Typed"})
+      tab(view, "et")
+
+      assert field(view, :text) == "Tere"
+      assert field(view, :subject) == "Typed"
+
+      select(view, "order_offer")
+
+      assert field(view, :text) == "Tere"
+      assert field(view, :subject) == "Typed"
+      assert field(view, :markdown) == "**Tere**"
+    end
+
     test "a failing converter is reported and logged, the fields unchanged",
          %{tmp_dir: root} do
       seed(root)
