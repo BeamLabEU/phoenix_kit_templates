@@ -120,10 +120,10 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         meanwhile. An edited part wins — the last save of it, with no check
         that another session changed the file since. A part filled by a
         converter counts as edited.
-      * The form's buttons all submit it, Save first: a submit with no
-        button named (the browser's implicit submission) saves. A
-        converter's button is told apart by the `action` it submits, which
-        LiveView's client sends along since 1.0 — this package's minimum.
+      * The form's buttons all submit it, Save first (the form's default
+        button), and a submit that names no button saves. A converter's
+        button is told apart by the `action` it submits, which LiveView's
+        client sends along since 1.0 — this package's minimum.
       * The host's callbacks (`preview`, `after_write`, `after_change`, the
         converters) run in the LiveView's process and block the page while
         they run: keep them fast.
@@ -242,8 +242,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       end
     end
 
-    # Save is the form's first submit button: a submit that names no button
-    # (or names Save) saves.
+    # A submit that names no button, or names Save, saves.
     def handle_event("save", %{"parts" => parts} = params, socket) when is_map(parts) do
       if Map.get(params, "action", "save") == "save" and
            writable?(socket, socket.assigns.selected) do
@@ -1105,7 +1104,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
                 Each language is saved on its own: switching tabs or templates drops unsaved
                 changes. A part saved empty has its file deleted.
               </p>
-              <%!-- Save comes first: a browser submits a form with no button named as if by its first one. --%>
+              <%!-- Save comes first: the form's default button. --%>
               <div class="flex flex-wrap gap-2">
                 <button type="submit" name="action" value="save" class="btn btn-primary btn-sm">
                   Save

@@ -317,8 +317,8 @@ Markdown renderer called with no variables may do either to a link target (see
 "`markdown` and `layout` are found, not interpreted" above), so protect
 placeholders through it. The buttons submit the form with an `action` value
 that LiveView's client sends from `phoenix_live_view` 1.0 on, this package's
-minimum (`~> 1.0`; tested on 1.2.12); Save is the first button, so a submit
-with none named saves.
+minimum (`~> 1.0`; tested on 1.2.12); Save is the first button, and a submit
+that names none saves.
 
 The editor is compiled only when `phoenix_live_view` is present at the time
 this package is compiled: a host that adds LiveView later needs
