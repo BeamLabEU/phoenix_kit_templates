@@ -28,14 +28,17 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     ## Attributes
 
       * `:root` (required) — the host's template directory. Anything but a
-        string shows an error and nothing can be written.
+        string shows an error and nothing can be written. Keep it fixed for
+        the life of the page: the open form's notion of what the user left
+        alone belongs to the root it was opened from.
       * `:editable` — `true` to allow saving, creating and deleting; anything
         else shows the files read-only. Default `false`. Checked again by every
         event, not only by what is rendered.
       * `:name_prefixes` — which templates this editor sees **and** may write
         or delete: names starting with one of these strings. Checked on every
-        select, save, create, copy and delete. Default `[]`, which shows
-        nothing.
+        select, save, create, copy and delete. Anything but a list counts as
+        `[]`, and entries that are not non-empty strings are dropped. Default
+        `[]`, which shows nothing.
       * `:locales` — the language tabs, in order. A last tab, *Fallback*, edits
         the locale-less files (`text.txt`), used for any language without its
         own file.
