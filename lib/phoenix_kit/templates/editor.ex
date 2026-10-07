@@ -216,8 +216,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       {:ok, refresh_preview(socket, previous_files)}
     end
 
-    # Clicking the template or tab already open switches nothing: the form
-    # keeps what a conversion put in it, as the browser keeps what was typed.
     @impl true
     # The open template or tab clicked again keeps the form (unsaved values
     # included) and only clears what is transient: a notice, a pending delete.
