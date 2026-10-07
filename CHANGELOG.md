@@ -13,10 +13,11 @@
   fields are kept, and Save writes the converted part like an edited one
   (a part a save refuses stays in the form).
   Converters are called with the form's text as typed, placeholders included,
-  and fail like the other callbacks, leaving the form as it was. The buttons
-  submit the form with an `action` (LiveView 1.0 or later); Save is the
-  first, so a submit with no button named saves. No buttons read-only or
-  without `convert`.
+  and should return the placeholders as they are, in link targets too (see
+  the Markdown note under Documentation); they fail like the other
+  callbacks, leaving the form as it was. The buttons submit the form with an
+  `action` (LiveView 1.0 or later); Save is the first, so a submit with no
+  button named saves. No buttons read-only or without `convert`.
 
 ## 0.2.3 - 2026-10-07
 

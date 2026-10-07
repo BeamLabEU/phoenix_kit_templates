@@ -310,11 +310,15 @@ in the Text field. `markdown_to_html(markdown)` backs *Markdown → HTML*: the
 form's Markdown rendered into the HTML field. A converter returns a string or
 `{:error, reason}`. Nothing is saved: the result waits in the form, with the
 user's other unsaved fields as they were, and Save writes it like any edited
-part. Placeholders are passed as typed — a converter that should keep
-`{{name}}` for later must not substitute it. The buttons submit the form with
-an `action` value that LiveView's client sends from `phoenix_live_view` 1.0 on,
-this package's minimum (`~> 1.0`; tested on 1.2.12); Save is the first button,
-so a submit with none named saves.
+part. Placeholders are passed as typed, and a converter should give them back
+as they are — `{{name}}` is for the message to fill in later: not substituted,
+and in a link target (`[Pay]({{url}})`) neither percent-encoded nor dropped. A
+Markdown renderer called with no variables may do either to a link target (see
+"`markdown` and `layout` are found, not interpreted" above), so protect
+placeholders through it. The buttons submit the form with an `action` value
+that LiveView's client sends from `phoenix_live_view` 1.0 on, this package's
+minimum (`~> 1.0`; tested on 1.2.12); Save is the first button, so a submit
+with none named saves.
 
 The editor is compiled only when `phoenix_live_view` is present at the time
 this package is compiled: a host that adds LiveView later needs

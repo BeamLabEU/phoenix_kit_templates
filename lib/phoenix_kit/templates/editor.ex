@@ -90,11 +90,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         A converter returns a string or `{:error, reason}`; anything else, an
         exception, throw or exit is an error, reported like the other
         callbacks, and the form is left as it was. It gets what is in the
-        form, saved or not, with placeholders as typed: one that should keep
-        them — `{{name}}` for the message to fill in later — must not
-        substitute them (call the renderer with no variables, say). Nothing
-        is written: the result waits in the form, the user's other unsaved
-        fields as they were, until the user saves it.
+        form, saved or not, with placeholders as typed, and should give them
+        back as they are — `{{name}}` is for the message to fill in later:
+        not substituted, and in a link target (`[Pay]({{url}})`) neither
+        percent-encoded nor dropped. A Markdown renderer called with no
+        variables may do either to a link target, so protect placeholders
+        through it (the README's note on `markdown`). Nothing is written:
+        the result waits in the form, the user's other unsaved fields as
+        they were, until the user saves it.
 
     ## What it does
 
