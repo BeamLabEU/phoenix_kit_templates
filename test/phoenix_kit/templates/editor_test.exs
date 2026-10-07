@@ -22,6 +22,7 @@ defmodule PhoenixKit.Templates.EditorTest do
       opts =
         opts
         |> Map.put_new(:after_write, fn paths -> send(test_pid, {:after_write, paths}) end)
+        |> Map.put_new(:after_change, fn name -> send(test_pid, {:after_change, name}) end)
         |> maybe_render_preview()
 
       {:ok, assign(socket, opts: opts)}
@@ -66,6 +67,7 @@ defmodule PhoenixKit.Templates.EditorTest do
     end
 
     def failing_after_write(_paths), do: raise("chown failed")
+    def failing_after_change(_name), do: raise("refresh failed")
   end
 
   defp put(root, name, file, content) do
@@ -830,6 +832,92 @@ defmodule PhoenixKit.Templates.EditorTest do
 
       refute File.exists?(Path.join([root, "order_offer", "subject.de.txt"]))
       assert File.read!(Path.join([root, "order_offer", "subject.et.txt"])) == "x"
+    end
+  end
+
+  describe "after_change" do
+    test "follows a save that only deletes a part", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      html = save(view, %{text: ""})
+
+      assert html =~ "Saved"
+      refute File.exists?(Path.join([root, "order_offer", "text.et.txt"]))
+      refute_received {:after_write, _paths}
+      assert_received {:after_change, "order_offer"}
+    end
+
+    test "follows a save that writes", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      save(view, %{subject: "Uus {{order_number}}"})
+
+      assert_received {:after_write, _paths}
+      assert_received {:after_change, "order_offer"}
+    end
+
+    test "is not called when nothing changed", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      save(view, %{subject: "Pakkumine {{order_number}}\n"})
+
+      refute_received {:after_change, _name}
+    end
+
+    test "follows a copy, named for the new template", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+
+      create(view, "order_copy", "order_offer")
+
+      assert File.exists?(Path.join(root, "order_copy"))
+      assert_received {:after_change, "order_copy"}
+    end
+
+    test "follows deleting a template", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+      target = with_target(view, "#editor")
+
+      render_click(target, "delete", %{})
+      render_click(target, "confirm_delete", %{})
+
+      refute File.exists?(Path.join(root, "order_offer"))
+      assert_received {:after_change, "order_offer"}
+    end
+
+    test "is not called for an unsaved draft deleted", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      create(view, "order_draft")
+      target = with_target(view, "#editor")
+
+      render_click(target, "delete", %{})
+      render_click(target, "confirm_delete", %{})
+
+      refute_received {:after_change, _name}
+    end
+
+    test "a failing after_change is reported and logged, not a crash", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{after_change: {Host, :failing_after_change}})
+      select(view, "order_offer")
+
+      log =
+        capture_log(fn ->
+          html = save(view, %{text: ""})
+          assert html =~ "after_change failed"
+        end)
+
+      assert log =~ "failing_after_change/1"
+      refute File.exists?(Path.join([root, "order_offer", "text.et.txt"]))
     end
   end
 end

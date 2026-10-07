@@ -64,6 +64,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         This package never does. The files are written before it is called;
         if it raises, throws or exits, that is shown as an error after the
         save's own result and logged with its stacktrace.
+      * `:after_change` — `{module, function}` or a 1-arity function, called
+        with the template's name after any change on disk: a save that wrote
+        or deleted files, a copy (the new name) or a deleted template — for
+        example to refresh what the host shows about the files. Not called
+        when nothing changed. Reported and logged like `:after_write`.
 
     ## What it does
 
@@ -130,6 +135,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
          preview: nil,
          sample_variables: %{},
          after_write: nil,
+         after_change: nil,
          templates: [],
          selected: nil,
          draft?: false,
@@ -242,7 +248,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       paths = for {_part, {:ok, paths}} <- results, path <- paths, do: path
       saved = for {part, {:ok, _paths}} <- results, do: part
       errors = for {part, {:error, reason}} <- results, do: {part, reason}
-      notified = notify_written(socket, paths)
+
+      notified =
+        socket
+        |> notify_written(paths)
+        |> then_notify_changed(socket, if(saved == [], do: nil, else: name))
 
       socket
       |> assign(notice: with_notified(save_notice(saved, errors), notified))
@@ -322,7 +332,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp copy(socket, from, name) do
       case Overrides.copy_template(socket.assigns.root, from, name) do
         {:ok, paths} ->
-          notified = notify_written(socket, paths)
+          notified =
+            socket |> notify_written(paths) |> then_notify_changed(socket, name)
+
           notice = {:info, "Created “#{name}” as a copy of “#{from}”."}
 
           socket
@@ -342,8 +354,12 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
       notice =
         case result do
-          :ok -> {:info, "Deleted “#{name}”."}
-          {:error, reason} -> {:error, "Not deleted: " <> describe(reason)}
+          :ok ->
+            changed = if socket.assigns.draft?, do: nil, else: name
+            with_notified({:info, "Deleted “#{name}”."}, notify_changed(socket, changed))
+
+          {:error, reason} ->
+            {:error, "Not deleted: " <> describe(reason)}
         end
 
       socket = socket |> assign(notice: notice, confirm_delete?: false) |> load_templates()
@@ -523,12 +539,37 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         call(callback, [paths])
         :ok
       end)
+      |> tag_failure("after_write")
+    end
+
+    defp notify_changed(_socket, nil), do: :ok
+    defp notify_changed(%{assigns: %{after_change: nil}}, _name), do: :ok
+
+    defp notify_changed(socket, name) do
+      callback = socket.assigns.after_change
+
+      safely({"after_change", callback, [name]}, fn ->
+        call(callback, [name])
+        :ok
+      end)
+      |> tag_failure("after_change")
+    end
+
+    defp tag_failure(:ok, _role), do: :ok
+    defp tag_failure({:error, reason}, role), do: {:error, {role, reason}}
+
+    # Both callbacks run; the first failure is the one reported.
+    defp then_notify_changed(:ok, socket, name), do: notify_changed(socket, name)
+
+    defp then_notify_changed(written_error, socket, name) do
+      notify_changed(socket, name)
+      written_error
     end
 
     defp with_notified(notice, :ok), do: notice
 
-    defp with_notified({_kind, message}, {:error, reason}),
-      do: {:error, message <> " But the host's after_write failed: " <> reason}
+    defp with_notified({_kind, message}, {:error, {role, reason}}),
+      do: {:error, message <> " But the host's #{role} failed: " <> reason}
 
     # A host callback that raises, throws or exits is reported, not a crash —
     # and logged with its stacktrace, since the notice is gone with the page.

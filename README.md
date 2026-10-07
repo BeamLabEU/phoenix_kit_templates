@@ -280,6 +280,7 @@ host adds this package's `lib/` to its sources.
   preview={{MyApp.EmailPreview, :preview}}
   sample_variables={%{"order_number" => "37"}}
   after_write={{MyApp.EmailTemplates, :after_write}}
+  after_change={{MyApp.EmailTemplates, :after_change}}
 />
 ```
 
@@ -290,7 +291,9 @@ confirmation. `name_prefixes` limits what it may write as well as what it
 shows; `editable={false}` makes it read-only. `preview(name, locale)` returns
 `{subject, html}` as strings (or `nil`), shown in an `<iframe sandbox>` that
 cannot run scripts. `after_write` receives the paths a save or copy created;
-if it or `preview` fails, the editor shows the error instead of crashing and
+`after_change` receives the template's name after any change on disk — a save
+that wrote or deleted files, a copy, a deleted template. If a callback or
+`preview` fails, the editor shows the error instead of crashing and
 logs it. `sample_variables` is one map for every template, so include the
 layout's variables if headers and footers use them. Each language tab is saved
 on its own, and the last save wins: there is no check that another session
