@@ -83,9 +83,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         is partly refused (one part too large, say) names the parts it saved
         and the ones it did not. Each tab is saved on its own: switching tabs
         or templates, or a reconnect, drops unsaved changes.
-      * The last save wins: a part is written when it differs from what this
-        editor last read, with no check that another session changed the
-        file since.
+      * A part is written only when the user changed it from what the form
+        was given (on opening the template or tab, or after a save): a part
+        left alone is never written back over another session's change made
+        meanwhile. An edited part wins — the last save of it, with no check
+        that another session changed the file since.
+      * The host's callbacks (`preview`, `after_write`, `after_change`) run in
+        the LiveView's process and block the page while they run: keep them
+        fast.
       * Creates a template empty (it exists on disk once its first part is
         saved) or as a copy of a listed one — every file in its directory,
         including any of the host's own beside the parts
@@ -141,6 +146,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
          draft?: false,
          locale: nil,
          contents: %{},
+         baseline: %{},
          confirm_delete?: false,
          preview_result: nil,
          missing: [],
@@ -151,7 +157,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     @impl true
     def update(assigns, socket) do
       previous_files = files_of(socket, socket.assigns.selected)
-      socket = assign(socket, assigns)
+      socket = socket |> assign(assigns) |> sanitize_prefixes()
 
       socket =
         if editable?(socket.assigns), do: socket, else: assign(socket, confirm_delete?: false)
@@ -233,12 +239,17 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     end
 
     defp save(socket, params) do
-      %{root: root, selected: name, locale: locale, contents: contents} = socket.assigns
+      %{root: root, selected: name, locale: locale, contents: contents, baseline: baseline} =
+        socket.assigns
 
       results =
         Enum.flat_map(@parts, fn part ->
           with value when is_binary(value) <- params[Atom.to_string(part)],
-               {:ok, change} <- change(Map.get(contents, part), normalize_newlines(value)) do
+               value = normalize_newlines(value),
+               # Left as the form was given it: another session's change to
+               # this part since then must not be written back over.
+               false <- value == Map.get(baseline, part, ""),
+               {:ok, change} <- change(Map.get(contents, part), value) do
             [{part, apply_change(change, root, name, part, locale)}]
           else
             _unchanged -> []
@@ -384,10 +395,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     defp keep_selection(socket) do
       if visible?(socket, socket.assigns.selected) do
-        socket =
-          if socket.assigns.locale in tabs(socket.assigns), do: socket, else: reset_locale(socket)
-
-        load_contents(socket)
+        if socket.assigns.locale in tabs(socket.assigns),
+          do: refresh_contents(socket),
+          else: socket |> reset_locale() |> load_contents()
       else
         deselect(socket)
       end
@@ -434,13 +444,23 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         selected: nil,
         draft?: false,
         contents: %{},
+        baseline: %{},
         preview_result: nil,
         missing: [],
         confirm_delete?: false
       )
     end
 
+    # What the form is drawn from. `baseline` is what the form was last given
+    # for this template and tab (on select, a tab switch or a save); a parent
+    # re-render refreshes `contents` from disk but keeps it, so `save/2` can
+    # tell a part the user left alone from one they edited.
     defp load_contents(socket) do
+      socket = refresh_contents(socket)
+      assign(socket, baseline: baseline(socket.assigns.contents))
+    end
+
+    defp refresh_contents(socket) do
       %{selected: name, locale: locale} = socket.assigns
 
       contents =
@@ -451,6 +471,12 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
             do: {part, file_contents(content, mtime)}
 
       socket |> assign(contents: contents) |> load_missing()
+    end
+
+    defp baseline(contents) do
+      for {part, %{content: content}} <- contents,
+          into: %{},
+          do: {part, normalize_newlines(content)}
     end
 
     # A file put on disk by hand may not be UTF-8, which the page cannot carry:
@@ -558,7 +584,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp tag_failure(:ok, _role), do: :ok
     defp tag_failure({:error, reason}, role), do: {:error, {role, reason}}
 
-    # Both callbacks run; the first failure is the one reported.
+    # Both callbacks run even when the first fails; the notice reports the
+    # first failure, and every failure is logged (`safely/2`).
     defp then_notify_changed(:ok, socket, name), do: notify_changed(socket, name)
 
     defp then_notify_changed(written_error, socket, name) do
@@ -610,6 +637,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     defp allowed?(socket, name) do
       is_binary(name) and String.starts_with?(name, socket.assigns.name_prefixes)
+    end
+
+    # A host's mistake (no list, an empty prefix that would match every name)
+    # allows nothing rather than everything, or a crash.
+    defp sanitize_prefixes(socket) do
+      prefixes = socket.assigns.name_prefixes
+      prefixes = if is_list(prefixes), do: prefixes, else: []
+      assign(socket, name_prefixes: Enum.filter(prefixes, &(is_binary(&1) and &1 != "")))
     end
 
     defp writable?(socket, name), do: editable?(socket.assigns) and visible?(socket, name)

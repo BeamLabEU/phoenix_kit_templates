@@ -920,4 +920,66 @@ defmodule PhoenixKit.Templates.EditorTest do
       refute File.exists?(Path.join([root, "order_offer", "text.et.txt"]))
     end
   end
+
+  describe "a part the user did not edit" do
+    test "is not written back over another session's change", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      # Another session saves the subject; the host re-renders the editor.
+      File.write!(Path.join([root, "order_offer", "subject.et.txt"]), "Teine sessioon\n")
+      Overrides.reset_cache([root])
+      send(view.pid, {:put, %{sample_variables: %{"order_number" => "38"}}})
+      _ = render(view)
+
+      # The browser still holds the subject it was shown, untouched, and the
+      # text the user did edit.
+      view
+      |> with_target("#editor")
+      |> render_submit("save", %{
+        "parts" => %{"subject" => "Pakkumine {{order_number}}\n", "text" => "Uus tekst\n"}
+      })
+
+      assert File.read!(Path.join([root, "order_offer", "subject.et.txt"])) ==
+               "Teine sessioon\n"
+
+      assert File.read!(Path.join([root, "order_offer", "text.et.txt"])) == "Uus tekst\n"
+    end
+
+    test "an edited part still wins over another session's change", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      File.write!(Path.join([root, "order_offer", "subject.et.txt"]), "Teine sessioon\n")
+      Overrides.reset_cache([root])
+      send(view.pid, {:put, %{sample_variables: %{"order_number" => "38"}}})
+      _ = render(view)
+
+      view
+      |> with_target("#editor")
+      |> render_submit("save", %{"parts" => %{"subject" => "Minu muudatus"}})
+
+      assert File.read!(Path.join([root, "order_offer", "subject.et.txt"])) == "Minu muudatus"
+    end
+  end
+
+  describe "a host's bad name_prefixes" do
+    test "an empty prefix allows nothing by itself", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{name_prefixes: ["", "order_"]})
+
+      assert has_element?(view, "#editor [phx-click=select][phx-value-name=order_offer]")
+      refute has_element?(view, "#editor [phx-click=select][phx-value-name=secret_other]")
+    end
+
+    test "no list shows nothing and does not crash", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{name_prefixes: nil})
+
+      refute has_element?(view, "#editor [phx-click=select]")
+      assert Process.alive?(view.pid)
+    end
+  end
 end

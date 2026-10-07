@@ -101,7 +101,15 @@ defmodule PhoenixKit.Templates.Overrides do
     * **Atomic:** the content goes to a temporary file in the same directory,
       is synced, and is renamed over the target, so a concurrent read sees the
       old file or the new one, never half of one. A replaced file keeps its
-      permission bits.
+      permission bits. The directory is not synced after the rename: a crash
+      right after a write may lose the rename and keep the old file, but never
+      leaves the new name on an empty file.
+    * **Two narrow races are left to the caller**, both surfacing as an error,
+      neither losing data: `delete/4` removing a directory its last file left
+      empty while a concurrent `write/5` is creating a file in it (that write
+      fails with `{:error, :enoent}`), and `copy_template/3` checking that the
+      target is absent before its final rename (an empty directory created at
+      the target in between is replaced).
     * **At most `max_bytes/0`** (256 KiB) of UTF-8 per file.
     * **The cache is reset for the root** (`reset_cache([root])`) after every
       change, so the next render sees it. Pass the same root string the

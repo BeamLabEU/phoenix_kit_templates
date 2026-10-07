@@ -296,9 +296,14 @@ that wrote or deleted files, a copy, a deleted template. If a callback or
 `preview` fails, the editor shows the error instead of crashing and
 logs it. `sample_variables` is one map for every template, so include the
 layout's variables if headers and footers use them. Each language tab is saved
-on its own, and the last save wins: there is no check that another session
-changed a file meanwhile. The interface text is English. The full list of
-attributes is in the module docs.
+on its own. A part the user left alone is never written back over another
+session's change; an edited part wins, with no check that the file changed
+meanwhile. The callbacks run in the LiveView's process — keep them fast. The
+interface text is English. The full list of attributes is in the module docs.
+
+The editor is compiled only when `phoenix_live_view` is present at the time
+this package is compiled: a host that adds LiveView later needs
+`mix deps.compile phoenix_kit_templates --force` to get it.
 
 ## No runtime dependencies
 

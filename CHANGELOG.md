@@ -35,8 +35,9 @@
   called for a template with no files, and is called again when the host
   re-renders with a new callback, new variables or changed files. A file that
   is not UTF-8 is shown read-only and never written over. A save that is
-  partly refused names the parts saved and the parts refused; the last save
-  wins, with no check for another session's change. Compiled only when
+  partly refused names the parts saved and the parts refused; a part the user
+  left alone is never written back over another session's change, an edited
+  part wins with no check for one. Compiled only when
   `phoenix_live_view` is present; it is an optional dependency, and nothing
   depends on PhoenixKit.
 
