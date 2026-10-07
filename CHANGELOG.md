@@ -27,9 +27,9 @@
   copy, delete with confirmation, a host preview in a script-less sandboxed
   iframe, read-only mode, an `after_write` callback (the paths a save or copy
   created) and an `after_change` callback (the template's name after any
-  change on disk, deletions included). `name_prefixes` is
-  checked on every write, an unsaved draft included; a `preview`,
-  `after_write` or `after_change` that raises, throws or exits is shown as an error, not a
+  change on disk, deletions included). `name_prefixes` is checked on every
+  write, an unsaved draft included; a `preview`, `after_write` or
+  `after_change` that raises, throws or exits is shown as an error, not a
   crash, and logged with its stacktrace. A preview must return strings or
   `nil` (a `{:safe, _}` is escaped, anything else is an error); it is not
   called for a template with no files, and is called again when the host
