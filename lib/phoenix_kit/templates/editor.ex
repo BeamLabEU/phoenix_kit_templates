@@ -184,7 +184,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
          locale: nil,
          contents: %{},
          baseline: %{},
-         retained: %{},
          form_values: %{},
          form_rev: 0,
          confirm_delete?: false,
@@ -320,13 +319,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       saved = for {part, {:ok, _paths}} <- results, do: part
       errors = for {part, {:error, reason}} <- results, do: {part, reason}
 
-      # What the user typed into a part that was refused: kept in the form, not
-      # replaced by what is on disk, so the edit can be fixed and saved again.
-      retained =
-        for {part, _reason} <- errors,
-            into: %{},
-            do: {part, normalize_newlines(params[Atom.to_string(part)])}
-
       notified =
         socket
         |> notify_written(paths)
@@ -337,8 +329,19 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       |> load_templates()
       |> redraft()
       |> load_contents()
-      |> assign(retained: retained)
+      |> assign(form_values: refused_values(errors, params))
       |> preview()
+    end
+
+    # A refused part stays in the form as the user sent it: drawn from the
+    # file again, a part a conversion filled would be lost. Text that is not
+    # UTF-8 cannot be drawn at all.
+    defp refused_values(errors, params) do
+      for {part, _reason} <- errors,
+          value = params[Atom.to_string(part)],
+          is_binary(value) and String.valid?(value),
+          into: %{},
+          do: {part, normalize_newlines(value)}
     end
 
     # Puts a converted part into the form, not on disk: `form_values` keeps
@@ -606,7 +609,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         draft?: false,
         contents: %{},
         baseline: %{},
-        retained: %{},
         form_values: %{},
         preview_result: nil,
         missing: [],
@@ -617,18 +619,13 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     # What the form is drawn from. `baseline` is what the form was last given
     # for this template and tab (on select, a tab switch or a save); a parent
     # re-render refreshes `contents` from disk but keeps it, so `save/2` can
-    # tell a part the user left alone from one they edited. `retained` holds
-    # the text of parts a save refused; it lasts until the next load.
-    # `form_values`, the fields as a conversion left them, go too: the form is
-    # drawn from the files again.
+    # tell a part the user left alone from one they edited. `form_values`,
+    # the fields as a conversion left them, go too: the form is drawn from the
+    # files again (but for the parts a save refused: `save/2`).
     defp load_contents(socket) do
       socket = refresh_contents(socket)
 
-      assign(socket,
-        baseline: baseline(socket.assigns.contents),
-        retained: %{},
-        form_values: %{}
-      )
+      assign(socket, baseline: baseline(socket.assigns.contents), form_values: %{})
     end
 
     defp refresh_contents(socket) do
@@ -1067,7 +1064,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
                 id={"#{@id}-part-#{part}"}
                 part={part}
                 file={@contents[part]}
-                retained={@retained[part]}
                 value={@form_values[part]}
                 rev={@form_rev}
               />
@@ -1184,7 +1180,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     attr :id, :string, required: true
     attr :part, :atom, required: true
     attr :file, :map, default: nil
-    attr :retained, :string, default: nil
     attr :value, :string, default: nil
     attr :rev, :integer, default: 0
 
@@ -1202,9 +1197,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp part_field(assigns) do
       assigns =
         assign(assigns,
-          value:
-            assigns.value || assigns.retained ||
-              if(assigns.file, do: assigns.file.content, else: ""),
+          value: assigns.value || if(assigns.file, do: assigns.file.content, else: ""),
           rows: Map.fetch!(@part_rows, assigns.part)
         )
 

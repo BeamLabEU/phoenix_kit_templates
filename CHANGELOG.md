@@ -10,7 +10,8 @@
   `%{to_text: callback, markdown_to_html: callback}`, adds *Fill text from
   content* (Markdown if not blank, else HTML, into Text) and *Markdown → HTML*
   (into HTML). They fill the form, not the files: the user's other unsaved
-  fields are kept, and Save writes the converted part like an edited one.
+  fields are kept, and Save writes the converted part like an edited one
+  (a part a save refuses stays in the form).
   Converters are called with the form's text as typed, placeholders included,
   and fail like the other callbacks, leaving the form as it was. The buttons
   submit the form with an `action` (LiveView 1.0 or later); Save is the

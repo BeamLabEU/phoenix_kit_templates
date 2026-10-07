@@ -1325,6 +1325,25 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert field(view, :subject) == "Teine sessioon\n"
     end
 
+    test "a converted part a save refuses stays in the form", %{tmp_dir: root} do
+      seed(root)
+      too_large = String.duplicate("x", Overrides.max_bytes() + 1)
+      view = mount_editor(root)
+      send(view.pid, {:put, %{convert: %{markdown_to_html: fn _markdown -> too_large end}}})
+      select(view, "order_offer")
+      convert(view, "md_to_html", %{markdown: "**Tere**"})
+
+      assert save(view, %{subject: "Uus"}) =~ "Not saved: HTML: larger than 256 KiB"
+      dir = Path.join(root, "order_offer")
+      assert File.read!(Path.join(dir, "subject.et.txt")) == "Uus"
+      refute File.exists?(Path.join(dir, "html.et.html"))
+      assert field(view, :html) == too_large
+      assert field(view, :subject) == "Uus"
+
+      assert save(view, %{}) =~ "Not saved: HTML: larger than 256 KiB"
+      assert field(view, :html) == too_large
+    end
+
     test "converted values are dropped on another tab or template", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root, %{convert: @convert})
