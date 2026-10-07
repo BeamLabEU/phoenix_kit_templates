@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Added
+
+- **A write API on one root:** `Overrides.write/5`, `delete/4`,
+  `delete_template/2`, `copy_template/3`, `list/1`, plus `valid_name?/1` and
+  `max_bytes/0`. Same layout, name and locale rules as reading, but a
+  malformed locale is refused instead of falling back; the path stays inside
+  the root (symlinks included); writes are atomic (synced, then renamed; a
+  replaced file keeps its permissions) and capped at 256 KiB of UTF-8; the
+  cache is reset for the root after every change, a failed
+  `delete_template/2` included. `delete/4` removes the template directory
+  along with its last file, since git does not track an empty one. Errors are
+  `{:error, reason}`. `write/5` returns the paths it created — the template
+  directory too when the write is its first part file — so a host can fix
+  their ownership.
+  `copy_template/3` copies every regular file of a template directory, a
+  host's own files beside the parts included, through a hidden directory
+  renamed into place, and returns the new directory and its files.
+- **A `label` part** (`label[.locale].txt`) that the write API and `list/1`
+  know and rendering never reads — a caption for an editor's list.
+- **`PhoenixKit.Templates.Editor`**, a `Phoenix.LiveComponent` for editing
+  those files: list (shared `_`-prefixed parts grouped apart), per-language
+  editing of `label`/`subject`/`text`/`markdown`/`html`, create empty or as a
+  copy, delete with confirmation, a host preview in a script-less sandboxed
+  iframe, read-only mode, an `after_write` callback (the paths a save or copy
+  created) and an `after_change` callback (the template's name after any
+  change on disk, deletions included). `name_prefixes` is checked on every
+  write, an unsaved draft included; a `preview`, `after_write` or
+  `after_change` that raises, throws or exits is shown as an error, not a
+  crash, and logged with its stacktrace. A preview must return strings or
+  `nil` (a `{:safe, _}` is escaped, anything else is an error); it is not
+  called for a template with no files, and is called again when the host
+  re-renders with a new callback, new variables or changed files. A file that
+  is not UTF-8 is shown read-only and never written over. A save that is
+  partly refused names the parts saved and the parts refused; a part the user
+  left alone is never written back over another session's change, an edited
+  part wins with no check for one. Compiled only when
+  `phoenix_live_view` is present; it is an optional dependency, and nothing
+  depends on PhoenixKit.
+
 ### Fixed
 
 - Subject normalization no longer takes quadratic time on long whitespace runs

@@ -4,7 +4,9 @@ defmodule PhoenixKit.Templates.Overrides do
 
   A host customizes a message by dropping a file into its own repo, where it is
   version-controlled and reviewable, instead of editing a database row through
-  an admin UI. Nothing here writes; an override is only ever read.
+  an admin UI. Rendering only ever reads an override; `write/5`, `delete/4`,
+  `delete_template/2`, `copy_template/3` and `list/1` exist for a host that
+  edits its own files from a screen of its own — see "Writing" below.
 
   ## Layout
 
@@ -66,8 +68,10 @@ defmodule PhoenixKit.Templates.Overrides do
   this package — there is no point in this package's compilation at which they
   could be read. So they are read at runtime and cached in `:persistent_term`,
   including the *absence* of a file, since a missing override is the common case
-  and would otherwise cost a `File.stat` on every send. Files cannot change
-  without a deploy; `reset_cache/0` exists for tests and dev reloads.
+  and would otherwise cost a `File.stat` on every send. Files change through a
+  deploy, which starts a fresh VM, or through the write functions below, which
+  reset the cache for their own root; `reset_cache/0` covers the rest — tests,
+  dev reloads, files edited by hand.
 
   ## Path safety
 
@@ -77,15 +81,81 @@ defmodule PhoenixKit.Templates.Overrides do
   current call site, but this module turns a name into a filesystem read, and
   that is not a boundary to leave to the caller's good behaviour —
   `../../../etc/passwd` resolves to no override rather than to a file.
+
+  ## Writing
+
+  `write/5`, `delete/4`, `delete_template/2`, `copy_template/3` and `list/1`
+  work on **one** root — the host's own directory, never a package's — and on
+  the same layout. They are plain `File` calls for a host-side editor;
+  rendering does not use them.
+
+    * **Same validation as reading, but refusing instead of falling back.** The
+      name must match the pattern above; a locale must be `nil` or a
+      well-formed tag (reading treats a junk locale as `nil`, which for a write
+      would silently target the locale-less file); `layout` takes no locale.
+    * **One more part, `label`** (`label[.locale].txt`): a human-readable
+      caption for an editor's list. Rendering never reads it and `parts/0`
+      does not include it.
+    * **The path stays inside the root**, symlinks included
+      (`Path.safe_relative/2`), and the root must already exist.
+    * **Atomic:** the content goes to a temporary file in the same directory,
+      is synced, and is renamed over the target, so a concurrent read sees the
+      old file or the new one, never half of one. A replaced file keeps its
+      permission bits. The directory is not synced after the rename: a crash
+      right after a write may lose the rename and keep the old file, but never
+      leaves the new name on an empty file.
+    * **Two narrow races are left to the caller**, both surfacing as an error,
+      neither losing data: `delete/4` removing a directory its last file left
+      empty while a concurrent `write/5` is creating a file in it (that write
+      fails with `{:error, :enoent}`), and `copy_template/3` checking that the
+      target is absent before its final rename (an empty directory created at
+      the target in between is replaced).
+    * **At most `max_bytes/0`** (256 KiB) of UTF-8 per file.
+    * **The cache is reset for the root** (`reset_cache([root])`) after every
+      change, so the next render sees it. Pass the same root string the
+      renderer gets in `:paths` — the cache is keyed on it. A first lookup
+      that was already reading the old file when the change landed can still
+      cache what it read, after the reset; that window is one file read long,
+      and the next change or `reset_cache/1` for the root clears it.
+
+  Every refusal is an `{:error, reason}`; nothing raises on bad input.
+  `write/5` returns the paths it created — the template directory first, when
+  the write is its first part file, then the file — and `copy_template/3` the
+  new directory and its files, so a host can, for example, fix their ownership.
   """
 
   @parts %{subject: "txt", text: "txt", html: "html", markdown: "md", layout: "txt"}
+  # `label` is written and listed, never rendered: an editor's caption.
+  @writable_parts Map.put(@parts, :label, "txt")
+  @max_bytes 256 * 1024
 
   @name_pattern ~r/\A_?[a-z0-9][a-z0-9_\-]*\z/
   @locale_pattern ~r/\A[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,3}\z/
 
   @typedoc "Which part of a template to look for."
   @type part :: :subject | :text | :html | :markdown | :layout
+
+  @typedoc "A part `write/5` accepts: every rendered part, plus `label`."
+  @type writable_part :: part() | :label
+
+  @typedoc "Why a write, delete or listing refused or failed."
+  @type error ::
+          :invalid_root
+          | :invalid_name
+          | :invalid_part
+          | :invalid_locale
+          | :invalid_content
+          | :too_large
+          | :unsafe_path
+          | File.posix()
+
+  @typedoc "One part file found by `list/1`."
+  @type file_entry :: %{
+          part: writable_part(),
+          locale: String.t() | nil,
+          path: Path.t(),
+          mtime: DateTime.t()
+        }
 
   @doc "The parts an override file can supply."
   @spec parts() :: [part()]
@@ -129,7 +199,9 @@ defmodule PhoenixKit.Templates.Overrides do
   @doc """
   Drops cached override lookups.
 
-  Only tests and dev reloads need this: a deploy starts a fresh VM.
+  `write/5` and the other write functions call this for their root. Otherwise
+  only tests, dev reloads and files changed by hand need it: a deploy starts a
+  fresh VM.
 
   Pass a list of roots to clear only the entries that consulted them. That
   scoping is what lets an async test clear its own `tmp_dir` without erasing a
@@ -145,6 +217,362 @@ defmodule PhoenixKit.Templates.Overrides do
     end
 
     :ok
+  end
+
+  @doc """
+  Whether `name` is a valid template name — the pattern `read/4` and `write/5`
+  both apply — for a caller that wants to check a name before writing to it.
+  """
+  @spec valid_name?(term()) :: boolean()
+  def valid_name?(name), do: check_name(name) == :ok
+
+  @doc "The largest file, in bytes, that `write/5` accepts."
+  @spec max_bytes() :: pos_integer()
+  def max_bytes, do: @max_bytes
+
+  @doc """
+  Writes `content` as `<root>/<name>/<part>[.<locale>].<ext>`, replacing any
+  file already there, and resets the cache for `root`.
+
+  `part` is any rendered part or `:label`; `locale` is `nil` for the
+  locale-less file. Returns `{:ok, paths}` — the template directory when this
+  is its first part file (a directory this call created, or one that held no
+  part file yet), then the file — or `{:error, reason}`; see "Writing" in the
+  module docs for what is refused.
+  """
+  @spec write(Path.t(), String.t(), writable_part(), String.t() | nil, String.t()) ::
+          {:ok, [Path.t()]} | {:error, error()}
+  def write(root, name, part, locale, content) do
+    with {:ok, dir, path} <- target(root, name, part, locale),
+         :ok <- check_content(content),
+         first_part? = list_files(root, name) == [],
+         :ok <- File.mkdir_p(dir),
+         :ok <- write_atomically(path, content) do
+      reset_cache([root])
+      {:ok, if(first_part?, do: [dir, path], else: [path])}
+    end
+  end
+
+  @doc """
+  Deletes one part file — exactly the one `write/5` would write for the same
+  arguments, with no locale fallback — and resets the cache for `root`.
+
+  When that was the last file in the template directory, the directory goes
+  too: git does not track an empty directory, so keeping it would leave a
+  template that exists here and not after a checkout. A directory still
+  holding anything else, a host's own file included, stays.
+
+  A missing file is `{:error, :enoent}`.
+  """
+  @spec delete(Path.t(), String.t(), writable_part(), String.t() | nil) ::
+          :ok | {:error, error()}
+  def delete(root, name, part, locale) do
+    with {:ok, dir, path} <- target(root, name, part, locale),
+         :ok <- File.rm(path) do
+      # Refused, harmlessly, while anything is left in it.
+      _ = File.rmdir(dir)
+      reset_cache([root])
+    end
+  end
+
+  @doc """
+  Deletes the template directory `<root>/<name>` with everything in it, and
+  resets the cache for `root`.
+
+  A missing directory is `{:error, :enoent}`.
+  """
+  @spec delete_template(Path.t(), String.t()) :: :ok | {:error, error()}
+  def delete_template(root, name) do
+    with :ok <- check_root(root),
+         :ok <- check_name(name),
+         :ok <- check_inside(root, name),
+         dir = Path.join(root, name),
+         true <- File.dir?(dir) || {:error, :enoent} do
+      remove_tree(root, dir)
+    end
+  end
+
+  @doc """
+  Copies the template directory `<root>/<from>` to a new `<root>/<to>`, and
+  resets the cache for `root`.
+
+  Every regular file is copied, not only the part files `list/1` shows: a host
+  may keep files of its own beside the parts (a marker saying who a message is
+  for, say), and a copy without them would be a different template. Hidden
+  files (an interrupted write's temporary file), subdirectories and anything
+  leading out of the root are skipped. A file over `max_bytes/0` refuses the
+  whole copy with `{:error, :too_large}`; an existing `<to>` is
+  `{:error, :eexist}`. The files are copied into a hidden directory that is
+  then renamed to `<to>`, so a failed copy leaves nothing behind and a reader
+  never sees half of one.
+
+  Returns `{:ok, paths}` — the new directory, then its files — or
+  `{:error, reason}`.
+  """
+  @spec copy_template(Path.t(), String.t(), String.t()) :: {:ok, [Path.t()]} | {:error, error()}
+  def copy_template(root, from, to) do
+    with :ok <- check_root(root),
+         :ok <- check_name(from),
+         :ok <- check_name(to),
+         :ok <- check_inside(root, from),
+         :ok <- check_inside(root, to),
+         {:ok, files} <- copyable_files(root, from),
+         :ok <- check_absent(Path.join(root, to)),
+         :ok <- copy_tree(root, from, to, files) do
+      reset_cache([root])
+      dir = Path.join(root, to)
+      {:ok, [dir | Enum.map(files, &Path.join(dir, &1))]}
+    end
+  end
+
+  # The regular files directly inside a template directory that a copy takes.
+  defp copyable_files(root, name) do
+    dir = Path.join(root, name)
+
+    with true <- File.dir?(dir) || {:error, :enoent},
+         {:ok, entries} <- File.ls(dir) do
+      files =
+        entries
+        |> Enum.reject(&String.starts_with?(&1, "."))
+        |> Enum.filter(&copyable_file?(root, name, &1))
+        |> Enum.sort()
+
+      {:ok, files}
+    end
+  end
+
+  defp copyable_file?(root, name, file) do
+    check_inside(root, Path.join(name, file)) == :ok and
+      File.regular?(Path.join([root, name, file]))
+  end
+
+  defp check_absent(path) do
+    case File.lstat(path) do
+      {:ok, _stat} -> {:error, :eexist}
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp copy_tree(root, from, to, files) do
+    tmp = Path.join(root, temporary_name(to))
+
+    result =
+      with :ok <- File.mkdir(tmp),
+           :ok <- copy_files(Path.join(root, from), tmp, files) do
+        File.rename(tmp, Path.join(root, to))
+      end
+
+    if result != :ok, do: File.rm_rf(tmp)
+    result
+  end
+
+  defp copy_files(source, target, files) do
+    Enum.reduce_while(files, :ok, fn file, :ok ->
+      from = Path.join(source, file)
+      to = Path.join(target, file)
+
+      with {:ok, %File.Stat{size: size}} <- File.stat(from),
+           true <- size <= @max_bytes || {:error, :too_large},
+           {:ok, content} <- File.read(from),
+           :ok <- write_synced(to, content),
+           :ok <- keep_mode(from, to) do
+        {:cont, :ok}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp remove_tree(root, dir) do
+    result = File.rm_rf(dir)
+    # Reset even when the removal failed part-way: some files are gone already.
+    reset_cache([root])
+
+    case result do
+      {:ok, _removed} -> :ok
+      {:error, reason, _path} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  The templates under `root`, sorted by name: `[%{name:, files: [file_entry]}]`.
+
+  Lists every directory whose name passes the name pattern — an empty one
+  included — and, inside it, every file that `write/5` could have written
+  (`label` included), sorted by part and locale. Anything else (a temporary
+  file, `layout.<locale>.txt`, a symlink out of the root, a stray file) is
+  skipped. A root that does not exist, or is not a string, lists nothing.
+  """
+  @spec list(Path.t()) :: [%{name: String.t(), files: [file_entry()]}]
+  def list(root) when is_binary(root) do
+    case File.ls(root) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&template_dir?(root, &1))
+        |> Enum.sort()
+        |> Enum.map(&%{name: &1, files: list_files(root, &1)})
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  def list(_root), do: []
+
+  defp template_dir?(root, name) do
+    check_name(name) == :ok and check_inside(root, name) == :ok and
+      File.dir?(Path.join(root, name))
+  end
+
+  defp list_files(root, name) do
+    dir = Path.join(root, name)
+
+    case File.ls(dir) do
+      {:ok, files} ->
+        files
+        |> Enum.flat_map(&file_entry(root, name, &1))
+        |> Enum.sort_by(&{&1.part, &1.locale})
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp file_entry(root, name, file) do
+    path = Path.join([root, name, file])
+
+    with {:ok, part, locale} <- parse_file_name(file),
+         :ok <- check_inside(root, Path.join(name, file)),
+         {:ok, %File.Stat{type: :regular, mtime: mtime}} <- File.stat(path, time: :posix) do
+      [%{part: part, locale: locale, path: path, mtime: DateTime.from_unix!(mtime)}]
+    else
+      _not_a_part_file -> []
+    end
+  end
+
+  defp parse_file_name(file) do
+    case String.split(file, ".") do
+      [part, ext] -> parse_file_name(part, nil, ext)
+      [part, locale, ext] -> parse_file_name(part, locale, ext)
+      _other -> :error
+    end
+  end
+
+  defp parse_file_name(part_name, locale, ext) do
+    with {part, ^ext} <-
+           Enum.find(@writable_parts, :error, fn {part, _ext} ->
+             Atom.to_string(part) == part_name
+           end),
+         {:ok, locale} <- check_locale(part, locale) do
+      {:ok, part, locale}
+    else
+      _invalid -> :error
+    end
+  end
+
+  # Every check a write or delete makes before it touches the filesystem, in
+  # the order a caller is most likely to have got wrong.
+  defp target(root, name, part, locale) do
+    with :ok <- check_root(root),
+         :ok <- check_name(name),
+         {:ok, ext} <- check_part(part),
+         {:ok, locale} <- check_locale(part, locale),
+         file = file_name(part, locale, ext),
+         :ok <- check_inside(root, Path.join(name, file)) do
+      {:ok, Path.join(root, name), Path.join([root, name, file])}
+    end
+  end
+
+  defp check_root(root) when is_binary(root) do
+    if File.dir?(root), do: :ok, else: {:error, :invalid_root}
+  end
+
+  defp check_root(_root), do: {:error, :invalid_root}
+
+  defp check_name(name) when is_binary(name) do
+    if Regex.match?(@name_pattern, name), do: :ok, else: {:error, :invalid_name}
+  end
+
+  defp check_name(_name), do: {:error, :invalid_name}
+
+  defp check_part(part) do
+    case Map.fetch(@writable_parts, part) do
+      {:ok, ext} -> {:ok, ext}
+      :error -> {:error, :invalid_part}
+    end
+  end
+
+  defp check_locale(_part, nil), do: {:ok, nil}
+  defp check_locale(:layout, _locale), do: {:error, :invalid_locale}
+
+  defp check_locale(_part, locale) when is_binary(locale) do
+    if Regex.match?(@locale_pattern, locale), do: {:ok, locale}, else: {:error, :invalid_locale}
+  end
+
+  defp check_locale(_part, _locale), do: {:error, :invalid_locale}
+
+  # The name and locale patterns already rule out `..` and `/`; this also
+  # catches a symlink inside the root that points out of it.
+  defp check_inside(root, relative) do
+    case Path.safe_relative(relative, root) do
+      {:ok, _path} -> :ok
+      :error -> {:error, :unsafe_path}
+    end
+  end
+
+  defp check_content(content) when is_binary(content) do
+    cond do
+      byte_size(content) > @max_bytes -> {:error, :too_large}
+      String.valid?(content) -> :ok
+      true -> {:error, :invalid_content}
+    end
+  end
+
+  defp check_content(_content), do: {:error, :invalid_content}
+
+  defp file_name(part, nil, ext), do: "#{part}.#{ext}"
+  defp file_name(part, locale, ext), do: "#{part}.#{locale}.#{ext}"
+
+  # Written beside the target and renamed over it: a rename within a directory
+  # is atomic, so a reader never sees a half-written file. The data is synced
+  # before the rename, so a crash cannot leave the new name on an empty file.
+  defp write_atomically(path, content) do
+    tmp = Path.join(Path.dirname(path), temporary_name(Path.basename(path)))
+
+    with :ok <- write_synced(tmp, content),
+         :ok <- keep_mode(path, tmp),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      error ->
+        File.rm(tmp)
+        error
+    end
+  end
+
+  # Hidden, so it never parses as a template or a part file. Random rather than
+  # `System.unique_integer/1`, which repeats across restarts: a leftover from a
+  # crash must not collide with a later write's exclusive open.
+  defp temporary_name(base) do
+    ".#{base}.#{Base.url_encode64(:rand.bytes(9), padding: false)}.tmp"
+  end
+
+  defp write_synced(path, content) do
+    with {:ok, file} <- File.open(path, [:write, :exclusive, :binary, :raw]) do
+      try do
+        with :ok <- :file.write(file, content), do: :file.datasync(file)
+      after
+        :file.close(file)
+      end
+    end
+  end
+
+  # A replaced file keeps its permission bits rather than taking the umask's.
+  defp keep_mode(path, tmp) do
+    case File.stat(path) do
+      {:ok, %File.Stat{mode: mode}} -> File.chmod(tmp, Bitwise.band(mode, 0o777))
+      {:error, _reason} -> :ok
+    end
   end
 
   # Validated before the cache is consulted, not after: every distinct key is a

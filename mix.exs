@@ -10,6 +10,7 @@ defmodule PhoenixKitTemplates.MixProject do
       version: @version,
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       docs: docs(),
       package: package(),
@@ -20,11 +21,18 @@ defmodule PhoenixKitTemplates.MixProject do
   end
 
   # No runtime dependencies, deliberately: phoenix_kit depends on THIS package,
-  # so anything pulled in here lands upstream of the entire tree.
+  # so anything pulled in here lands upstream of the entire tree. The one
+  # exception is optional — phoenix_live_view, used only by the editor
+  # component, which is not compiled when the host does not have it.
   def application, do: [extra_applications: [:logger]]
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   defp deps do
     [
+      {:phoenix_live_view, "~> 1.0", optional: true},
+      {:lazy_html, ">= 0.1.0", only: :test},
       {:ex_doc, "~> 0.39", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
