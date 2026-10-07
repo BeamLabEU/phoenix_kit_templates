@@ -496,6 +496,18 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
       assert Overrides.list(~c"/tmp") == []
     end
 
+    test "skips a template directory that is a symlink out of the root", %{tmp_dir: root} do
+      outside = Path.join(root, "outside")
+      inside = Path.join(root, "root")
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "text.txt"), "outside the root")
+      File.mkdir_p!(inside)
+      File.ln_s!(outside, Path.join(inside, "alert"))
+      {:ok, _} = Overrides.write(inside, "notice", :text, nil, "inside")
+
+      assert [%{name: "notice"}] = Overrides.list(inside)
+    end
+
     test "skips a part file that is a symlink out of the root", %{tmp_dir: root} do
       {_outside, inside} = symlinked_part(root)
 
