@@ -14,7 +14,7 @@
   (a part a save refuses stays in the form).
   Converters are called with the form's text as typed, placeholders included,
   and should return the placeholders as they are, in link targets too (see
-  the Markdown note under Documentation); they fail like the other
+  the Markdown note under 0.2.3's Documentation); they fail like the other
   callbacks, leaving the form as it was. The buttons submit the form with an
   `action` (LiveView 1.0 or later); Save is the first, and a submit that
   names none saves. No buttons read-only or without `convert`.
