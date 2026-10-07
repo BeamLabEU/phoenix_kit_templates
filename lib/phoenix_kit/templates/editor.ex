@@ -19,6 +19,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
           preview={{MyApp.EmailPreview, :preview}}
           sample_variables={%{"order_number" => "37"}}
           after_write={{MyApp.EmailTemplates, :after_write}}
+          convert={%{to_text: {MyApp.EmailTemplates, :to_text}}}
         />
 
     Everything is read and written through `PhoenixKit.Templates.Overrides`
@@ -46,10 +47,13 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       * `:preview` — `{module, function}` or a 2-arity function called as
         `preview(name, locale)` (`locale` is `nil` on the fallback tab, and
         `name` may be a shared part such as `_header-x`). It returns
-        `{subject, html}` — each a string or `nil` — or `{:error, reason}`.
-        The HTML is shown in an `<iframe sandbox srcdoc>` without
-        `allow-scripts`, so nothing in an edited template runs in the admin
-        page; a `{:safe, iodata}` is escaped like a string, never trusted.
+        `{subject, html}` or `{subject, html, text}` — each a string or `nil`
+        — or `{:error, reason}`. With a text version the preview has two
+        tabs, *HTML* and *Text*, and a template opens on HTML (on Text when
+        its HTML is `nil`); the text is shown as plain text. The HTML is
+        shown in an `<iframe sandbox srcdoc>` without `allow-scripts`, so
+        nothing in an edited template runs in the admin page; a
+        `{:safe, iodata}` is escaped like a string, never trusted.
         Any other result, an exception, throw or exit is shown as an error
         rather than crashing the page, and the last three are logged. It is
         called on selecting a template or tab, after a save or copy, and when
@@ -73,6 +77,28 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         or deleted files, a copy (the new name) or a deleted template — for
         example to refresh what the host shows about the files. Not called
         when nothing changed. Reported and logged like `:after_write`.
+      * `:convert` — the host's converters, a map with either or both keys,
+        each `{module, function}` or a function. Each adds a button to the
+        form; without them, and read-only, there are none.
+        * `to_text: callback`, called as `to_text(:markdown, markdown)` or
+          `to_text(:html, html)` — the *Fill text from content* button: the
+          form's Markdown if it is not blank, else its HTML, made into plain
+          text and put in the Text field.
+        * `markdown_to_html: callback`, called as `markdown_to_html(markdown)`
+          — the *Markdown → HTML* button: the form's Markdown rendered into
+          the HTML field.
+
+        A converter returns a string or `{:error, reason}`; anything else, an
+        exception, throw or exit is an error, reported like the other
+        callbacks, and the form is left as it was. It gets what is in the
+        form, saved or not, with placeholders as typed, and should give them
+        back as they are — `{{name}}` is for the message to fill in later:
+        not substituted, and in a link target (`[Pay]({{url}})`) neither
+        percent-encoded nor dropped. A Markdown renderer called with no
+        variables may do either to a link target, so protect placeholders
+        through it (the README's note on `markdown`). Nothing is written:
+        the result waits in the form, the user's other unsaved fields as
+        they were, until the user saves it.
 
     ## What it does
 
@@ -86,16 +112,22 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         open as an unsaved one. Line breaks are stored as `\\n`. A save that
         is partly refused (one part too large, say) names the parts it saved
         and the ones it did not, and what was typed into those stays in the
-        form to be fixed and saved again. Each tab is saved on its own: switching tabs
-        or templates, or a reconnect, drops unsaved changes.
+        form to be fixed and saved again. Each tab is saved on its own:
+        switching to another tab or template, or a reconnect, drops unsaved
+        changes.
       * A part is written only when the user changed it from what the form
         was given (on opening the template or tab, or after a save): a part
         left alone is never written back over another session's change made
         meanwhile. An edited part wins — the last save of it, with no check
-        that another session changed the file since.
-      * The host's callbacks (`preview`, `after_write`, `after_change`) run in
-        the LiveView's process and block the page while they run: keep them
-        fast.
+        that another session changed the file since. A part filled by a
+        converter counts as edited.
+      * The form's buttons all submit it, Save first (the form's default
+        button), and a submit that names no button saves. A converter's
+        button is told apart by the `action` it submits, which LiveView's
+        client sends along since 1.0 — this package's minimum.
+      * The host's callbacks (`preview`, `after_write`, `after_change`, the
+        converters) run in the LiveView's process and block the page while
+        they run: keep them fast.
       * Creates a template empty (it exists on disk once its first part is
         saved) or as a copy of a listed one — every file in its directory,
         including any of the host's own beside the parts
@@ -135,6 +167,10 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     @part_rows %{label: 1, subject: 2, text: 10, markdown: 6, html: 10}
 
+    # The form's `action` values for the host's converters, and their arity.
+    @conversions %{"to_text" => :to_text, "md_to_html" => :markdown_to_html}
+    @converter_arity %{to_text: 2, markdown_to_html: 1}
+
     @impl true
     def mount(socket) do
       {:ok,
@@ -146,15 +182,23 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
          sample_variables: %{},
          after_write: nil,
          after_change: nil,
+         convert: nil,
          templates: [],
          selected: nil,
          draft?: false,
          locale: nil,
          contents: %{},
          baseline: %{},
-         retained: %{},
+         # The form's unsaved values, drawn instead of the files' until the
+         # template, tab or files change (`load_contents/1`), and a counter
+         # bumped by every conversion: it is rendered on every field, so a
+         # conversion's reply redraws them all — the browser then replaces
+         # what was retyped in a field it does not have focused.
+         form_values: %{},
+         form_rev: 0,
          confirm_delete?: false,
          preview_result: nil,
+         preview_tab: :html,
          missing: [],
          notice: nil
        )}
@@ -172,11 +216,17 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       {:ok, refresh_preview(socket, previous_files)}
     end
 
+    # Clicking the template or tab already open switches nothing: the form
+    # keeps what a conversion put in it, as the browser keeps what was typed.
     @impl true
+    # The open template or tab clicked again keeps the form (unsaved values
+    # included) and only clears what is transient: a notice, a pending delete.
+    def handle_event("select", %{"name" => name}, %{assigns: %{selected: name}} = socket),
+      do: {:noreply, clear_transient(socket)}
+
     def handle_event("select", %{"name" => name}, socket) do
       if visible?(socket, name) do
-        draft? = socket.assigns.draft? and name == socket.assigns.selected
-        {:noreply, socket |> assign(notice: nil, draft?: draft?) |> select(name)}
+        {:noreply, socket |> assign(notice: nil, draft?: false) |> select(name)}
       else
         {:noreply, socket}
       end
@@ -185,20 +235,47 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     def handle_event("locale", %{"locale" => locale}, socket) do
       locale = if locale == "", do: nil, else: locale
 
-      if socket.assigns.selected && locale in tabs(socket.assigns) do
-        {:noreply, socket |> assign(locale: locale, notice: nil) |> load_contents() |> preview()}
+      cond do
+        socket.assigns.selected && locale == socket.assigns.locale ->
+          {:noreply, clear_transient(socket)}
+
+        socket.assigns.selected && locale in tabs(socket.assigns) ->
+          {:noreply,
+           socket |> assign(locale: locale, notice: nil) |> load_contents() |> preview()}
+
+        true ->
+          {:noreply, socket}
+      end
+    end
+
+    # A conversion button submits the form like Save, with its own `action`.
+    def handle_event("save", %{"action" => action, "parts" => parts}, socket)
+        when is_map_key(@conversions, action) and is_map(parts) do
+      conversion = Map.fetch!(@conversions, action)
+
+      if writable?(socket, socket.assigns.selected) and
+           converter(socket.assigns, conversion) != nil do
+        {:noreply, convert(socket, conversion, parts)}
       else
         {:noreply, socket}
       end
     end
 
-    def handle_event("save", %{"parts" => parts}, socket) when is_map(parts) do
-      if writable?(socket, socket.assigns.selected) do
+    # A submit that names no button, or names Save, saves.
+    def handle_event("save", %{"parts" => parts} = params, socket) when is_map(parts) do
+      if Map.get(params, "action", "save") == "save" and
+           writable?(socket, socket.assigns.selected) do
         {:noreply, save(socket, parts)}
       else
         {:noreply, socket}
       end
     end
+
+    def handle_event("preview_tab", %{"tab" => "html"}, socket),
+      do: {:noreply, assign(socket, preview_tab: :html)}
+
+    def handle_event("preview_tab", %{"tab" => "text"}, socket),
+      do: {:noreply, assign(socket, preview_tab: :text)}
 
     def handle_event("create", %{"create" => %{"name" => name} = params}, socket)
         when is_binary(name) do
@@ -242,11 +319,30 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       |> assign(locale: initial_locale(socket, name))
       |> load_contents()
       |> preview()
+      |> open_preview()
+    end
+
+    # A template opens on its HTML preview, or on its text version when it
+    # has no HTML; switching language tabs keeps the preview tab.
+    defp open_preview(socket) do
+      tab =
+        case socket.assigns.preview_result do
+          {:ok, _subject, nil, text} when is_binary(text) -> :text
+          _other -> :html
+        end
+
+      assign(socket, preview_tab: tab)
     end
 
     defp save(socket, params) do
-      %{root: root, selected: name, locale: locale, contents: contents, baseline: baseline} =
-        socket.assigns
+      %{
+        root: root,
+        selected: name,
+        locale: locale,
+        contents: contents,
+        baseline: baseline,
+        preview_result: previous_preview
+      } = socket.assigns
 
       results =
         Enum.flat_map(@parts, fn part ->
@@ -266,13 +362,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       saved = for {part, {:ok, _paths}} <- results, do: part
       errors = for {part, {:error, reason}} <- results, do: {part, reason}
 
-      # What the user typed into a part that was refused: kept in the form, not
-      # replaced by what is on disk, so the edit can be fixed and saved again.
-      retained =
-        for {part, _reason} <- errors,
-            into: %{},
-            do: {part, normalize_newlines(params[Atom.to_string(part)])}
-
       notified =
         socket
         |> notify_written(paths)
@@ -283,9 +372,129 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       |> load_templates()
       |> redraft()
       |> load_contents()
-      |> assign(retained: retained)
+      |> assign(form_values: refused_values(errors, params))
       |> preview()
+      |> open_first_preview(previous_preview)
     end
+
+    # A draft's first save gives it its first preview, opened like a
+    # selected template's.
+    defp open_first_preview(socket, :unsaved), do: open_preview(socket)
+    defp open_first_preview(socket, _previous), do: socket
+
+    # A refused part stays in the form as the user sent it: drawn from the
+    # file again, a part a conversion filled would be lost. Text that is not
+    # UTF-8 cannot be drawn at all.
+    defp refused_values(errors, params) do
+      for {part, _reason} <- errors,
+          value = params[Atom.to_string(part)],
+          is_binary(value) and String.valid?(value),
+          into: %{},
+          do: {part, normalize_newlines(value)}
+    end
+
+    # Puts a converted part into the form, not on disk: `form_values` keeps
+    # every field as the browser sent it, so the user's other unsaved changes
+    # are drawn back as they were, and `baseline` stays as it is, so Save
+    # writes the converted part like any part the user edited.
+    defp convert(socket, conversion, params) do
+      values =
+        for part <- @parts,
+            value = params[Atom.to_string(part)],
+            is_binary(value),
+            into: %{},
+            do: {part, normalize_newlines(value)}
+
+      target = conversion_target(conversion)
+
+      cond do
+        not Enum.all?(values, fn {_part, value} -> String.valid?(value) end) ->
+          notice(socket, :error, "Not converted: " <> describe(:invalid_content))
+
+        invalid_on_disk?(socket, target) ->
+          notice(socket, :error, "Not converted: #{part_title(target)} " <> invalid_on_disk())
+
+        true ->
+          case conversion_source(socket, conversion, values) do
+            nil ->
+              notice(socket, :info, "Nothing to convert: " <> nothing_to_convert(conversion))
+
+            {:invalid, part} ->
+              notice(socket, :error, "Not converted: #{part_title(part)} " <> invalid_on_disk())
+
+            {format, source} ->
+              socket
+              |> run_converter(conversion, format, source)
+              |> converted(socket, values, target, format)
+          end
+      end
+    end
+
+    defp conversion_target(:to_text), do: :text
+    defp conversion_target(:markdown_to_html), do: :html
+
+    # Markdown when there is any, else HTML: the content the text is made from.
+    defp conversion_sources(:to_text), do: [:markdown, :html]
+    defp conversion_sources(:markdown_to_html), do: [:markdown]
+
+    # The first source with content. One that is not UTF-8 on disk has no
+    # field, so nothing to tell whether it is blank: it stops the search
+    # rather than being passed over as empty.
+    defp conversion_source(socket, conversion, values) do
+      Enum.find_value(conversion_sources(conversion), fn part ->
+        cond do
+          invalid_on_disk?(socket, part) -> {:invalid, part}
+          present?(values[part]) -> {part, values[part]}
+          true -> nil
+        end
+      end)
+    end
+
+    defp invalid_on_disk?(socket, part),
+      do: match?(%{invalid: true}, socket.assigns.contents[part])
+
+    defp present?(value), do: is_binary(value) and String.trim(value) != ""
+
+    defp nothing_to_convert(:to_text), do: "Markdown and HTML are empty."
+    defp nothing_to_convert(:markdown_to_html), do: "Markdown is empty."
+
+    defp run_converter(socket, conversion, format, source) do
+      callback = converter(socket.assigns, conversion)
+      args = if conversion == :to_text, do: [format, source], else: [source]
+
+      safely({Atom.to_string(conversion), callback, args}, fn ->
+        callback |> call(args) |> conversion_result()
+      end)
+    end
+
+    defp conversion_result({:error, reason}), do: {:error, describe_host(reason)}
+
+    defp conversion_result(value) when is_binary(value) do
+      if String.valid?(value), do: {:ok, value}, else: {:error, "unexpected result"}
+    end
+
+    defp conversion_result(_other), do: {:error, "unexpected result"}
+
+    # `form_rev` changes on every conversion, so the reply touches every field
+    # and the browser redraws them from what it was sent. Without it, a
+    # conversion coming out as the server already had the form (the user
+    # retyped only its target since the last one) sends nothing, and the
+    # browser keeps the retyped text.
+    defp converted({:ok, value}, socket, values, target, format) do
+      socket
+      |> assign(
+        form_values: Map.put(values, target, normalize_newlines(value)),
+        form_rev: socket.assigns.form_rev + 1
+      )
+      |> notice(
+        :info,
+        "Filled #{part_title(target)} from #{part_title(format)}. " <>
+          "It is not saved yet: check it, then Save."
+      )
+    end
+
+    defp converted({:error, reason}, socket, _values, _target, _format),
+      do: notice(socket, :error, "Not converted: " <> reason)
 
     defp save_notice([], []), do: {:info, "No changes."}
     defp save_notice(_saved, []), do: {:info, "Saved."}
@@ -453,13 +662,15 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp reset_locale(socket),
       do: assign(socket, locale: initial_locale(socket, socket.assigns.selected))
 
+    defp clear_transient(socket), do: assign(socket, notice: nil, confirm_delete?: false)
+
     defp deselect(socket) do
       assign(socket,
         selected: nil,
         draft?: false,
         contents: %{},
         baseline: %{},
-        retained: %{},
+        form_values: %{},
         preview_result: nil,
         missing: [],
         confirm_delete?: false
@@ -469,11 +680,12 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     # What the form is drawn from. `baseline` is what the form was last given
     # for this template and tab (on select, a tab switch or a save); a parent
     # re-render refreshes `contents` from disk but keeps it, so `save/2` can
-    # tell a part the user left alone from one they edited. `retained` holds
-    # the text of parts a save refused; it lasts until the next load.
+    # tell a part the user left alone from one they edited. `form_values`,
+    # the fields as a conversion left them, go too: the form is drawn from the
+    # files again (but for the parts a save refused: `save/2`).
     defp load_contents(socket) do
       socket = refresh_contents(socket)
-      assign(socket, baseline: baseline(socket.assigns.contents), retained: %{})
+      assign(socket, baseline: baseline(socket.assigns.contents), form_values: %{})
     end
 
     defp refresh_contents(socket) do
@@ -548,16 +760,28 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     # would break out of the attribute and the sandbox.
     defp preview_result({:error, reason}), do: {:error, describe_host(reason)}
 
-    defp preview_result({subject, html}) do
-      with {:ok, subject} <- preview_text(subject),
-           {:ok, html} <- preview_text(html) do
-        {:ok, subject, html}
-      else
+    # `:none` marks a host that gives no text version (`{subject, html}`):
+    # its preview has no Text tab, as before there was one. A host's own
+    # `{subject, html, :none}` is an error like any text that is no string.
+    defp preview_result({subject, html}), do: preview_texts(subject, html, :none)
+
+    defp preview_result({subject, html, text}) do
+      case preview_text(text) do
+        {:ok, text} -> preview_texts(subject, html, text)
         :error -> {:error, "unexpected preview result"}
       end
     end
 
     defp preview_result(_other), do: {:error, "unexpected preview result"}
+
+    defp preview_texts(subject, html, text) do
+      with {:ok, subject} <- preview_text(subject),
+           {:ok, html} <- preview_text(html) do
+        {:ok, subject, html, text}
+      else
+        :error -> {:error, "unexpected preview result"}
+      end
+    end
 
     defp preview_text(nil), do: {:ok, nil}
 
@@ -640,6 +864,26 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       do: Exception.format_mfa(module, function, arity)
 
     defp describe_callback(fun, _arity), do: inspect(fun)
+
+    # A converter the host passed in a shape that cannot be called counts as
+    # none: no button, and its event is ignored.
+    defp converter(%{convert: [_ | _] = convert} = assigns, conversion) do
+      if Keyword.keyword?(convert),
+        do: converter(%{assigns | convert: Map.new(convert)}, conversion),
+        else: nil
+    end
+
+    defp converter(%{convert: %{} = convert}, conversion) do
+      arity = Map.fetch!(@converter_arity, conversion)
+
+      case Map.get(convert, conversion) do
+        {module, function} = callback when is_atom(module) and is_atom(function) -> callback
+        fun when is_function(fun, arity) -> fun
+        _none -> nil
+      end
+    end
+
+    defp converter(_assigns, _conversion), do: nil
 
     defp call({module, function}, args), do: apply(module, function, args)
     defp call(fun, args) when is_function(fun, length(args)), do: apply(fun, args)
@@ -756,7 +1000,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
           shared: Enum.filter(assigns.templates, &String.starts_with?(&1.name, "_")),
           tabs: tabs(assigns),
           parts: @parts,
-          can_edit: editable?(assigns)
+          can_edit: editable?(assigns),
+          can_fill_text: converter(assigns, :to_text) != nil,
+          can_render_markdown: converter(assigns, :markdown_to_html) != nil
         )
 
       ~H"""
@@ -889,13 +1135,41 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
                 id={"#{@id}-part-#{part}"}
                 part={part}
                 file={@contents[part]}
-                retained={@retained[part]}
+                value={@form_values[part]}
+                rev={@form_rev}
               />
               <p class="text-xs opacity-70">
                 Each language is saved on its own: switching tabs or templates drops unsaved
                 changes. A part saved empty has its file deleted.
               </p>
-              <button type="submit" class="btn btn-primary btn-sm w-fit">Save</button>
+              <%!-- Save comes first: the form's default button. --%>
+              <div class="flex flex-wrap gap-2">
+                <button type="submit" name="action" value="save" class="btn btn-primary btn-sm">
+                  Save
+                </button>
+                <button
+                  :if={@can_fill_text}
+                  id={"#{@id}-to-text"}
+                  type="submit"
+                  name="action"
+                  value="to_text"
+                  class="btn btn-sm"
+                  title="Put the Markdown, or else the HTML, as plain text in Text. Not saved until you Save."
+                >
+                  Fill text from content
+                </button>
+                <button
+                  :if={@can_render_markdown}
+                  id={"#{@id}-md-to-html"}
+                  type="submit"
+                  name="action"
+                  value="md_to_html"
+                  class="btn btn-sm"
+                  title="Put the Markdown, rendered, in HTML. Not saved until you Save."
+                >
+                  Markdown → HTML
+                </button>
+              </div>
             </form>
 
             <dl :if={@selected && !@can_edit} class="flex flex-col gap-3">
@@ -931,7 +1205,12 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
             <div :if={@selected && @preview_result} id={"#{@id}-preview"} class="flex flex-col gap-2">
               <span class="text-sm font-semibold">Preview</span>
-              <.preview_pane id={@id} result={@preview_result} />
+              <.preview_pane
+                id={@id}
+                result={@preview_result}
+                tab={@preview_tab}
+                myself={@myself}
+              />
             </div>
           </section>
         </div>
@@ -972,7 +1251,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     attr :id, :string, required: true
     attr :part, :atom, required: true
     attr :file, :map, default: nil
-    attr :retained, :string, default: nil
+    attr :value, :string, default: nil
+    attr :rev, :integer, default: 0
 
     defp part_field(%{file: %{invalid: true}} = assigns) do
       ~H"""
@@ -988,7 +1268,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp part_field(assigns) do
       assigns =
         assign(assigns,
-          value: assigns.retained || if(assigns.file, do: assigns.file.content, else: ""),
+          value: assigns.value || if(assigns.file, do: assigns.file.content, else: ""),
           rows: Map.fetch!(@part_rows, assigns.part)
         )
 
@@ -1005,6 +1285,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
           id={@id}
           name={"parts[#{@part}]"}
           rows={@rows}
+          data-form-rev={@rev}
           class="textarea w-full font-mono text-sm"
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </div>
@@ -1013,23 +1294,52 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     attr :id, :string, required: true
     attr :result, :any, required: true
+    attr :tab, :atom, default: :html
+    attr :myself, :any, required: true
 
-    defp preview_pane(%{result: {:ok, subject, html}} = assigns) do
-      assigns = assign(assigns, subject: subject, html: html)
+    defp preview_pane(%{result: {:ok, subject, html, text}} = assigns) do
+      assigns =
+        assign(assigns,
+          subject: subject,
+          html: html,
+          text: text,
+          show_html?: text == :none or assigns.tab == :html
+        )
 
       ~H"""
       <p id={"#{@id}-preview-subject"} class="text-sm">
         <span class="opacity-60">Subject:</span> {@subject}
       </p>
+      <div :if={@text != :none} role="tablist" class="tabs tabs-border w-fit">
+        <button
+          :for={{tab, title} <- [html: "HTML", text: "Text"]}
+          id={"#{@id}-preview-tab-#{tab}"}
+          type="button"
+          role="tab"
+          phx-click="preview_tab"
+          phx-value-tab={tab}
+          phx-target={@myself}
+          aria-selected={to_string(tab == @tab)}
+          class={["tab", tab == @tab && "tab-active"]}
+        >
+          {title}
+        </button>
+      </div>
       <%!-- bg-white, not a theme colour: an email is drawn on white whatever the admin theme. --%>
       <iframe
-        :if={@html}
+        :if={@show_html? && @html}
         sandbox=""
         srcdoc={@html}
         title="Preview"
         class="h-[32rem] w-full rounded-box border border-base-300 bg-white"
       ></iframe>
-      <p :if={!@html} class="text-sm opacity-70">No HTML.</p>
+      <p :if={@show_html? && !@html} class="text-sm opacity-70">No HTML.</p>
+      <pre
+        :if={!@show_html? && @text}
+        id={"#{@id}-preview-text"}
+        class="whitespace-pre-wrap rounded-box bg-base-200 p-3 text-sm"
+      >{@text}</pre>
+      <p :if={!@show_html? && !@text} class="text-sm opacity-70">No text.</p>
       """
     end
 
@@ -1048,6 +1358,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     end
 
     defp invalid_utf8, do: "This file is not valid UTF-8 text; fix it on disk to edit it here."
+    defp invalid_on_disk, do: "is not valid UTF-8 text on disk; fix it there first."
 
     defp part_title(part), do: Map.fetch!(@part_titles, part)
     defp part_hint(part), do: Map.fetch!(@part_hints, part)

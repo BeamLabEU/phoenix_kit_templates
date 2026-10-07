@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Editor: a text version in the preview, and converters.** A `preview` may
+  return `{subject, html, text}`; the preview then has *HTML* and *Text* tabs
+  (`{subject, html}` works as before). An optional `convert` attribute,
+  `%{to_text: callback, markdown_to_html: callback}`, adds *Fill text from
+  content* (Markdown if not blank, else HTML, into Text) and *Markdown → HTML*
+  (into HTML). They fill the form, not the files: the user's other unsaved
+  fields are kept, and Save writes the converted part like an edited one
+  (a part a save refuses stays in the form).
+  Converters are called with the form's text as typed, placeholders included,
+  and should return the placeholders as they are, in link targets too (see
+  the Markdown note under 0.2.3's Documentation); they fail like the other
+  callbacks, leaving the form as it was. The buttons submit the form with an
+  `action` (LiveView 1.0 or later); Save is the first, and a submit that
+  names none saves. No buttons read-only or without `convert`; `convert` may
+  also be a keyword list. A field the user has focused when a conversion
+  returns keeps what is in it (the browser's rule for a focused input).
+
+### Changed
+
+- **Editor: clicking the open template or language tab again keeps the
+  form.** It used to reload the form from the files, dropping unsaved input;
+  now it only clears the notice and a pending delete confirmation.
+
 ## 0.2.3 - 2026-10-07
 
 ### Added
