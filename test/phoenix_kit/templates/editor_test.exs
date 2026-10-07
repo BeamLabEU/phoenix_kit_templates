@@ -151,7 +151,10 @@ defmodule PhoenixKit.Templates.EditorTest do
 
   # The diff the server sends back for `fun`'s event, as a browser gets it.
   # The test's page never holds what a user retyped in a field, so whether
-  # the field is sent again is seen here, not in the rendered page.
+  # the field is sent again is seen here, not in the rendered page. It reads
+  # LiveViewTest internals (the `view.proxy` tuple, the replies its proxy
+  # process receives) as of the LiveView in mix.lock (1.2.12): after a
+  # LiveView upgrade, a failure here is the helper's before the editor's.
   defp reply_diff(view, fun) do
     {_ref, _topic, proxy} = view.proxy
     :erlang.trace(proxy, true, [:receive])

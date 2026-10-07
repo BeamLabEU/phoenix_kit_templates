@@ -241,7 +241,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         when is_map_key(@conversions, action) and is_map(parts) do
       conversion = Map.fetch!(@conversions, action)
 
-      if writable?(socket, socket.assigns.selected) and converter(socket, conversion) do
+      if writable?(socket, socket.assigns.selected) and
+           converter(socket.assigns, conversion) != nil do
         {:noreply, convert(socket, conversion, parts)}
       else
         {:noreply, socket}
@@ -258,9 +259,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       end
     end
 
-    def handle_event("preview_tab", %{"tab" => tab}, socket) when tab in ["html", "text"] do
-      {:noreply, assign(socket, preview_tab: String.to_existing_atom(tab))}
-    end
+    def handle_event("preview_tab", %{"tab" => "html"}, socket),
+      do: {:noreply, assign(socket, preview_tab: :html)}
+
+    def handle_event("preview_tab", %{"tab" => "text"}, socket),
+      do: {:noreply, assign(socket, preview_tab: :text)}
 
     def handle_event("create", %{"create" => %{"name" => name} = params}, socket)
         when is_binary(name) do
@@ -444,7 +447,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp nothing_to_convert(:markdown_to_html), do: "Markdown is empty."
 
     defp run_converter(socket, conversion, format, source) do
-      callback = converter(socket, conversion)
+      callback = converter(socket.assigns, conversion)
       args = if conversion == :to_text, do: [format, source], else: [source]
 
       safely({Atom.to_string(conversion), callback, args}, fn ->
@@ -668,7 +671,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     # files again (but for the parts a save refused: `save/2`).
     defp load_contents(socket) do
       socket = refresh_contents(socket)
-
       assign(socket, baseline: baseline(socket.assigns.contents), form_values: %{})
     end
 
@@ -851,8 +853,6 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     # A converter the host passed in a shape that cannot be called counts as
     # none: no button, and its event is ignored.
-    defp converter(%{assigns: assigns}, conversion), do: converter(assigns, conversion)
-
     defp converter(%{convert: %{} = convert}, conversion) do
       arity = Map.fetch!(@converter_arity, conversion)
 
@@ -1275,7 +1275,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     attr :id, :string, required: true
     attr :result, :any, required: true
     attr :tab, :atom, default: :html
-    attr :myself, :any, default: nil
+    attr :myself, :any, required: true
 
     defp preview_pane(%{result: {:ok, subject, html, text}} = assigns) do
       assigns =
