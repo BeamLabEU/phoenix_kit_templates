@@ -37,10 +37,10 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
     end
 
     test "label is a writable .txt part that rendering never reads", %{tmp_dir: root} do
-      assert {:ok, _paths} = Overrides.write(root, "alert", :label, "et", "Hinnapakkumine")
+      assert {:ok, _paths} = Overrides.write(root, "alert", :label, "et", "Pakkumiskiri")
       assert {:ok, _paths} = Overrides.write(root, "alert", :label, nil, "Price offer")
 
-      assert File.read!(file(root, "alert", "label.et.txt")) == "Hinnapakkumine"
+      assert File.read!(file(root, "alert", "label.et.txt")) == "Pakkumiskiri"
       assert File.read!(file(root, "alert", "label.txt")) == "Price offer"
       refute :label in Overrides.parts()
       assert Overrides.read([root], "alert", :label, "et") == nil
@@ -64,8 +64,8 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
     end
 
     test "accepts a name with one leading underscore", %{tmp_dir: root} do
-      assert {:ok, _} = Overrides.write(root, "_header-andi", :html, nil, "<b>hi</b>")
-      assert File.read!(file(root, "_header-andi", "html.html")) == "<b>hi</b>"
+      assert {:ok, _} = Overrides.write(root, "_header-shop", :html, nil, "<b>hi</b>")
+      assert File.read!(file(root, "_header-shop", "html.html")) == "<b>hi</b>"
     end
 
     test "rejects a name the read pattern rejects", %{tmp_dir: root} do
@@ -226,7 +226,7 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
 
   describe "valid_name?/1" do
     test "applies the pattern read/4 and write/5 use" do
-      for name <- ["alert", "_header-andi", "a_b-c9", "9lives"],
+      for name <- ["alert", "_header-shop", "a_b-c9", "9lives"],
           do: assert(Overrides.valid_name?(name))
 
       for name <- ["../x", "Alert", "", "__x", "_", "a.b", "x\n", nil, :alert] do
@@ -319,7 +319,7 @@ defmodule PhoenixKit.Templates.OverridesWriteTest do
     test "copies every regular file, not only part files, and returns the paths",
          %{tmp_dir: root} do
       {:ok, _} = Overrides.write(root, "offer", :subject, "et", "Pakkumine")
-      {:ok, _} = Overrides.write(root, "offer", :label, "et", "Hinnapakkumine")
+      {:ok, _} = Overrides.write(root, "offer", :label, "et", "Pakkumiskiri")
       File.write!(file(root, "offer", "audience.txt"), "partner\n")
 
       dir = Path.join(root, "offer_copy")
