@@ -149,6 +149,18 @@ defmodule PhoenixKit.Templates.EditorTest do
     |> render_submit()
   end
 
+  # The diff the server sends back for `fun`'s event, as a browser gets it.
+  # The test's page never holds what a user retyped in a field, so whether
+  # the field is sent again is seen here, not in the rendered page.
+  defp reply_diff(view, fun) do
+    {_ref, _topic, proxy} = view.proxy
+    :erlang.trace(proxy, true, [:receive])
+    fun.()
+    assert_receive {:trace, ^proxy, :receive, %Phoenix.Socket.Reply{payload: payload}}
+    :erlang.trace(proxy, false, [:receive])
+    payload |> Map.get(:diff, %{}) |> inspect(limit: :infinity, printable_limit: :infinity)
+  end
+
   # What a field holds in the page, unescaped.
   defp field(view, part) do
     view
@@ -1235,6 +1247,25 @@ defmodule PhoenixKit.Templates.EditorTest do
 
       assert field(view, :text) == "Unsaved text"
       refute File.exists?(Path.join([root, "order_offer", "html.et.html"]))
+    end
+
+    test "a conversion is sent to the page again over the user's retyping", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+      convert(view, "md_to_html", %{markdown: "**Tere**"})
+
+      # The user retypes only the HTML, then converts again: the form comes
+      # out as the server already had it, yet the page must get it back. A
+      # browser redraws each field the reply touches from what it holds for
+      # it, the converted value; an empty reply leaves the retyped text.
+      diff =
+        reply_diff(view, fn ->
+          convert(view, "md_to_html", %{markdown: "**Tere**", html: "<p>Retyped</p>"})
+        end)
+
+      assert diff =~ "data-form-rev"
+      assert field(view, :html) == "<p><strong>Tere</strong></p>"
     end
 
     test "with nothing to convert says so and calls nothing", %{tmp_dir: root} do
