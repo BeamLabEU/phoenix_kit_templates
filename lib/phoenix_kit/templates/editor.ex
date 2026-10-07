@@ -320,8 +320,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     end
 
     defp save(socket, params) do
-      %{root: root, selected: name, locale: locale, contents: contents, baseline: baseline} =
-        socket.assigns
+      %{
+        root: root,
+        selected: name,
+        locale: locale,
+        contents: contents,
+        baseline: baseline,
+        preview_result: previous_preview
+      } = socket.assigns
 
       results =
         Enum.flat_map(@parts, fn part ->
@@ -353,7 +359,13 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       |> load_contents()
       |> assign(form_values: refused_values(errors, params))
       |> preview()
+      |> open_first_preview(previous_preview)
     end
+
+    # A draft's first save gives it its first preview, opened like a
+    # selected template's.
+    defp open_first_preview(socket, :unsaved), do: open_preview(socket)
+    defp open_first_preview(socket, _previous), do: socket
 
     # A refused part stays in the form as the user sent it: drawn from the
     # file again, a part a conversion filled would be lost. Text that is not

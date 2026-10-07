@@ -1152,6 +1152,19 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert has_element?(view, "#editor-preview-tab-text[aria-selected=true]")
       assert view |> element("#editor-preview-text") |> render() =~ "Only text"
     end
+
+    test "a draft's first save opens the preview on Text when it has no HTML",
+         %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      send(view.pid, {:put, %{preview: fn _name, _locale -> {"S", nil, "Only text"} end}})
+      create(view, "order_new")
+
+      save(view, %{text: "Only text"})
+
+      assert has_element?(view, "#editor-preview-tab-text[aria-selected=true]")
+      assert view |> element("#editor-preview-text") |> render() =~ "Only text"
+    end
   end
 
   describe "conversion buttons" do
