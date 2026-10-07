@@ -189,6 +189,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
          locale: nil,
          contents: %{},
          baseline: %{},
+         # The form's unsaved values, drawn instead of the files' until the
+         # template, tab or files change (`load_contents/1`), and a counter
+         # bumped by every conversion: it is rendered on every field, so a
+         # conversion's reply redraws them all — the browser then replaces
+         # what was retyped in a field it does not have focused.
          form_values: %{},
          form_rev: 0,
          confirm_delete?: false,
@@ -214,8 +219,10 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     # Clicking the template or tab already open switches nothing: the form
     # keeps what a conversion put in it, as the browser keeps what was typed.
     @impl true
+    # The open template or tab clicked again keeps the form (unsaved values
+    # included) and only clears what is transient: a notice, a pending delete.
     def handle_event("select", %{"name" => name}, %{assigns: %{selected: name}} = socket),
-      do: {:noreply, socket}
+      do: {:noreply, clear_transient(socket)}
 
     def handle_event("select", %{"name" => name}, socket) do
       if visible?(socket, name) do
@@ -228,11 +235,16 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     def handle_event("locale", %{"locale" => locale}, socket) do
       locale = if locale == "", do: nil, else: locale
 
-      if socket.assigns.selected && locale != socket.assigns.locale &&
-           locale in tabs(socket.assigns) do
-        {:noreply, socket |> assign(locale: locale, notice: nil) |> load_contents() |> preview()}
-      else
-        {:noreply, socket}
+      cond do
+        socket.assigns.selected && locale == socket.assigns.locale ->
+          {:noreply, clear_transient(socket)}
+
+        socket.assigns.selected && locale in tabs(socket.assigns) ->
+          {:noreply,
+           socket |> assign(locale: locale, notice: nil) |> load_contents() |> preview()}
+
+        true ->
+          {:noreply, socket}
       end
     end
 
@@ -650,6 +662,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp reset_locale(socket),
       do: assign(socket, locale: initial_locale(socket, socket.assigns.selected))
 
+    defp clear_transient(socket), do: assign(socket, notice: nil, confirm_delete?: false)
+
     defp deselect(socket) do
       assign(socket,
         selected: nil,
@@ -853,6 +867,12 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     # A converter the host passed in a shape that cannot be called counts as
     # none: no button, and its event is ignored.
+    defp converter(%{convert: [_ | _] = convert} = assigns, conversion) do
+      if Keyword.keyword?(convert),
+        do: converter(%{assigns | convert: Map.new(convert)}, conversion),
+        else: nil
+    end
+
     defp converter(%{convert: %{} = convert}, conversion) do
       arity = Map.fetch!(@converter_arity, conversion)
 

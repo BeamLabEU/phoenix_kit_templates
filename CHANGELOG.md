@@ -17,7 +17,15 @@
   the Markdown note under 0.2.3's Documentation); they fail like the other
   callbacks, leaving the form as it was. The buttons submit the form with an
   `action` (LiveView 1.0 or later); Save is the first, and a submit that
-  names none saves. No buttons read-only or without `convert`.
+  names none saves. No buttons read-only or without `convert`; `convert` may
+  also be a keyword list. A field the user has focused when a conversion
+  returns keeps what is in it (the browser's rule for a focused input).
+
+### Changed
+
+- **Editor: clicking the open template or language tab again keeps the
+  form.** It used to reload the form from the files, dropping unsaved input;
+  now it only clears the notice and a pending delete confirmation.
 
 ## 0.2.3 - 2026-10-07
 

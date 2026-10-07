@@ -1553,4 +1553,62 @@ defmodule PhoenixKit.Templates.EditorTest do
       refute_received :converted
     end
   end
+
+  describe "review follow-ups" do
+    test "clicking the open template again cancels a pending delete", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      view |> element("#editor-delete") |> render_click()
+      assert has_element?(view, "#editor-delete-confirm")
+
+      select(view, "order_offer")
+
+      refute has_element?(view, "#editor-delete-confirm")
+      assert File.dir?(Path.join(root, "order_offer"))
+    end
+
+    test "clicking the open language tab again cancels a pending delete", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      view |> element("#editor-delete") |> render_click()
+      tab(view, "et")
+
+      refute has_element?(view, "#editor-delete-confirm")
+    end
+
+    test "a keyword list of converters is taken like a map", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: [to_text: {Host, :to_text}]})
+      select(view, "order_offer")
+
+      assert has_element?(view, "#editor-parts button[name=action][value=to_text]")
+    end
+
+    test "a forged preview tab is ignored", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      view |> with_target("#editor") |> render_click("preview_tab", %{"tab" => "evil"})
+
+      assert Process.alive?(view.pid)
+    end
+
+    test "converted and unsaved values survive a parent re-render", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      convert(view, "to_text", %{subject: "Unsaved subject", markdown: "**Tere**"})
+      send(view.pid, {:put, %{sample_variables: %{"order_number" => "38"}}})
+      _ = render(view)
+
+      assert field(view, :text) == "Tere"
+      assert field(view, :subject) == "Unsaved subject"
+    end
+  end
 end
