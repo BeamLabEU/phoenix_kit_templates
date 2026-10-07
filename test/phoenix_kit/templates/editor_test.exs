@@ -1456,6 +1456,32 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert File.read!(Path.join([root, "order_offer", "text.et.txt"])) == latin
     end
 
+    test "a source part that is not UTF-8 on disk is not passed over", %{tmp_dir: root} do
+      seed(root)
+      put(root, "order_offer", "markdown.et.md", <<"Tere ", 0xE4, "\n">>)
+      put(root, "order_html", "html.et.html", <<"<p>Tere ", 0xE4, "</p>\n">>)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      assert convert(view, "to_text", %{html: "<p>Tere</p>"}) =~
+               "Not converted: Markdown is not valid UTF-8 text on disk"
+
+      assert field(view, :text) == "Tere!\n\n{{documents_list}}\n"
+
+      assert convert(view, "md_to_html", %{html: "<p>Tere</p>"}) =~
+               "Not converted: Markdown is not valid UTF-8 text on disk"
+
+      assert field(view, :html) == ""
+
+      # The HTML is read only when the Markdown is blank.
+      select(view, "order_html")
+      convert(view, "to_text", %{markdown: "**Tere**"})
+      assert field(view, :text) == "Tere"
+
+      assert convert(view, "to_text", %{markdown: ""}) =~
+               "Not converted: HTML is not valid UTF-8 text on disk"
+    end
+
     test "conversion events are refused read-only or without the callback",
          %{tmp_dir: root} do
       seed(root)

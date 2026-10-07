@@ -379,13 +379,16 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         not Enum.all?(values, fn {_part, value} -> String.valid?(value) end) ->
           notice(socket, :error, "Not converted: " <> describe(:invalid_content))
 
-        match?(%{invalid: true}, socket.assigns.contents[target]) ->
+        invalid_on_disk?(socket, target) ->
           notice(socket, :error, "Not converted: #{part_title(target)} " <> invalid_on_disk())
 
         true ->
-          case conversion_source(conversion, values) do
+          case conversion_source(socket, conversion, values) do
             nil ->
               notice(socket, :info, "Nothing to convert: " <> nothing_to_convert(conversion))
+
+            {:invalid, part} ->
+              notice(socket, :error, "Not converted: #{part_title(part)} " <> invalid_on_disk())
 
             {format, source} ->
               socket
@@ -399,17 +402,24 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp conversion_target(:markdown_to_html), do: :html
 
     # Markdown when there is any, else HTML: the content the text is made from.
-    defp conversion_source(:to_text, values) do
-      cond do
-        present?(values[:markdown]) -> {:markdown, values.markdown}
-        present?(values[:html]) -> {:html, values.html}
-        true -> nil
-      end
+    defp conversion_sources(:to_text), do: [:markdown, :html]
+    defp conversion_sources(:markdown_to_html), do: [:markdown]
+
+    # The first source with content. One that is not UTF-8 on disk has no
+    # field, so nothing to tell whether it is blank: it stops the search
+    # rather than being passed over as empty.
+    defp conversion_source(socket, conversion, values) do
+      Enum.find_value(conversion_sources(conversion), fn part ->
+        cond do
+          invalid_on_disk?(socket, part) -> {:invalid, part}
+          present?(values[part]) -> {part, values[part]}
+          true -> nil
+        end
+      end)
     end
 
-    defp conversion_source(:markdown_to_html, values) do
-      if present?(values[:markdown]), do: {:markdown, values.markdown}
-    end
+    defp invalid_on_disk?(socket, part),
+      do: match?(%{invalid: true}, socket.assigns.contents[part])
 
     defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
