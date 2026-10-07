@@ -49,7 +49,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         `name` may be a shared part such as `_header-x`). It returns
         `{subject, html}` or `{subject, html, text}` — each a string or `nil`
         — or `{:error, reason}`. With a text version the preview has two
-        tabs, *HTML* and *Text*; the text is shown as plain text. The HTML is
+        tabs, *HTML* and *Text*, and a template opens on HTML (on Text when
+        its HTML is `nil`); the text is shown as plain text. The HTML is
         shown in an `<iframe sandbox srcdoc>` without `allow-scripts`, so
         nothing in an edited template runs in the admin page; a
         `{:safe, iodata}` is escaped like a string, never trusted.
@@ -298,6 +299,19 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       |> assign(locale: initial_locale(socket, name))
       |> load_contents()
       |> preview()
+      |> open_preview()
+    end
+
+    # A template opens on its HTML preview, or on its text version when it
+    # has no HTML; switching language tabs keeps the preview tab.
+    defp open_preview(socket) do
+      tab =
+        case socket.assigns.preview_result do
+          {:ok, _subject, nil, text} when is_binary(text) -> :text
+          _other -> :html
+        end
+
+      assign(socket, preview_tab: tab)
     end
 
     defp save(socket, params) do
@@ -704,20 +718,27 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp preview_result({:error, reason}), do: {:error, describe_host(reason)}
 
     # `:none` marks a host that gives no text version (`{subject, html}`):
-    # its preview has no Text tab, as before there was one.
-    defp preview_result({subject, html}), do: preview_result({subject, html, :none})
+    # its preview has no Text tab, as before there was one. A host's own
+    # `{subject, html, :none}` is an error like any text that is no string.
+    defp preview_result({subject, html}), do: preview_texts(subject, html, :none)
 
     defp preview_result({subject, html, text}) do
-      with {:ok, subject} <- preview_text(subject),
-           {:ok, html} <- preview_text(html),
-           {:ok, text} <- if(text == :none, do: {:ok, :none}, else: preview_text(text)) do
-        {:ok, subject, html, text}
-      else
+      case preview_text(text) do
+        {:ok, text} -> preview_texts(subject, html, text)
         :error -> {:error, "unexpected preview result"}
       end
     end
 
     defp preview_result(_other), do: {:error, "unexpected preview result"}
+
+    defp preview_texts(subject, html, text) do
+      with {:ok, subject} <- preview_text(subject),
+           {:ok, html} <- preview_text(html) do
+        {:ok, subject, html, text}
+      else
+        :error -> {:error, "unexpected preview result"}
+      end
+    end
 
     defp preview_text(nil), do: {:ok, nil}
 

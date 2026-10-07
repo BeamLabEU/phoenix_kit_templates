@@ -1126,11 +1126,31 @@ defmodule PhoenixKit.Templates.EditorTest do
 
     test "a text version that is not a string is an error", %{tmp_dir: root} do
       seed(root)
-      view = mount_editor(root)
-      send(view.pid, {:put, %{preview: fn _name, _locale -> {"S", "<p>H</p>", 42} end}})
+
+      for text <- [42, :none] do
+        view = mount_editor(root)
+        send(view.pid, {:put, %{preview: fn _name, _locale -> {"S", "<p>H</p>", text} end}})
+        select(view, "order_offer")
+
+        assert render(view) =~ "Preview unavailable: unexpected preview result"
+      end
+    end
+
+    test "opens on HTML for each template, or on Text when there is no HTML",
+         %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: {Host, :preview_with_text}})
+      select(view, "order_offer")
+      view |> element("#editor-preview-tab-text") |> render_click()
+      select(view, "_header-shop")
+
+      assert has_element?(view, "#editor-preview-tab-html[aria-selected=true]")
+
+      send(view.pid, {:put, %{preview: fn _name, _locale -> {"S", nil, "Only text"} end}})
       select(view, "order_offer")
 
-      assert render(view) =~ "Preview unavailable: unexpected preview result"
+      assert has_element?(view, "#editor-preview-tab-text[aria-selected=true]")
+      assert view |> element("#editor-preview-text") |> render() =~ "Only text"
     end
   end
 
