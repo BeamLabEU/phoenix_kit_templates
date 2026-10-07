@@ -68,6 +68,26 @@ defmodule PhoenixKit.Templates.EditorTest do
 
     def failing_after_write(_paths), do: raise("chown failed")
     def failing_after_change(_name), do: raise("refresh failed")
+
+    # A host's text and HTML versions, the way a mailer would build them.
+    def preview_with_text(name, locale) do
+      {subject, html} = preview(name, locale)
+      {subject, html, "Hello from #{name} <as text>"}
+    end
+
+    # Crude stand-ins for a host's Markdown renderer: like a real one, they
+    # leave a placeholder they are given no value for as it is.
+    def to_text(:markdown, markdown), do: String.replace(markdown, "**", "")
+    def to_text(:html, html), do: String.replace(html, ~r/<[^>]*>/, "")
+
+    def markdown_to_html(markdown) do
+      "<p>" <> String.replace(markdown, ~r/\*\*(.+?)\*\*/, "<strong>\\1</strong>") <> "</p>"
+    end
+
+    def failing_to_text(_format, _source), do: raise("converter down")
+    def refusing_to_text(_format, _source), do: {:error, "cannot convert this"}
+    def shapeless_to_text(_format, _source), do: {:ok, "text"}
+    def latin_to_text(_format, _source), do: <<"Tere ", 0xE4>>
   end
 
   defp put(root, name, file, content) do
@@ -120,6 +140,26 @@ defmodule PhoenixKit.Templates.EditorTest do
   defp create(view, name, copy_from \\ "") do
     view |> form("#editor-create", create: %{name: name, copy_from: copy_from}) |> render_submit()
   end
+
+  # Presses a conversion button, the browser sending every field as it stands.
+  defp convert(view, action, parts) do
+    view
+    |> form("#editor-parts", parts: parts)
+    |> put_submitter("#editor-parts button[name=action][value=#{action}]")
+    |> render_submit()
+  end
+
+  # What a field holds in the page, unescaped.
+  defp field(view, part) do
+    view
+    |> element("#editor-parts textarea[name='parts[#{part}]']")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.text()
+    |> String.replace_prefix("\n", "")
+  end
+
+  @convert %{to_text: {Host, :to_text}, markdown_to_html: {Host, :markdown_to_html}}
 
   describe "the list" do
     test "shows only names under the prefixes, shared parts in their own group",
@@ -1024,6 +1064,358 @@ defmodule PhoenixKit.Templates.EditorTest do
 
       refute has_element?(view, "#editor [phx-click=select]")
       assert Process.alive?(view.pid)
+    end
+  end
+
+  describe "preview with a text version" do
+    test "a host returning text gets HTML and Text tabs", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: {Host, :preview_with_text}})
+      select(view, "order_offer")
+
+      assert has_element?(view, "#editor-preview-tab-html[aria-selected=true]")
+      assert has_element?(view, "#editor-preview iframe")
+      refute has_element?(view, "#editor-preview-text")
+
+      view |> element("#editor-preview-tab-text") |> render_click()
+
+      assert has_element?(view, "#editor-preview-tab-text[aria-selected=true]")
+      refute has_element?(view, "#editor-preview iframe")
+
+      assert view |> element("#editor-preview-text") |> render() =~
+               "Hello from order_offer &lt;as text&gt;"
+
+      assert view |> element("#editor-preview-subject") |> render() =~
+               "Subject of order_offer (et)"
+
+      view |> element("#editor-preview-tab-html") |> render_click()
+      assert has_element?(view, "#editor-preview iframe")
+    end
+
+    test "a text version of nil says there is none", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      send(view.pid, {:put, %{preview: fn _name, _locale -> {"S", "<p>H</p>", nil} end}})
+      select(view, "order_offer")
+
+      view |> element("#editor-preview-tab-text") |> render_click()
+
+      assert view |> element("#editor-preview") |> render() =~ "No text."
+    end
+
+    test "a host returning only HTML gets no tabs", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      assert has_element?(view, "#editor-preview iframe")
+      refute has_element?(view, "#editor-preview-tab-text")
+    end
+
+    test "a text version that is not a string is an error", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      send(view.pid, {:put, %{preview: fn _name, _locale -> {"S", "<p>H</p>", 42} end}})
+      select(view, "order_offer")
+
+      assert render(view) =~ "Preview unavailable: unexpected preview result"
+    end
+  end
+
+  describe "conversion buttons" do
+    test "are not shown without a convert callback, or read-only", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      refute has_element?(view, "#editor-parts button[name=action][value=to_text]")
+      refute has_element?(view, "#editor-parts button[name=action][value=md_to_html]")
+
+      view = mount_editor(root, %{editable: false, convert: @convert})
+      select(view, "order_offer")
+
+      refute has_element?(view, "button[name=action]")
+    end
+
+    test "each shows only with its own callback", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: %{to_text: {Host, :to_text}}})
+      select(view, "order_offer")
+
+      assert has_element?(view, "#editor-parts button[name=action][value=to_text]")
+      refute has_element?(view, "#editor-parts button[name=action][value=md_to_html]")
+    end
+
+    test "Save is the form's first submit button, so a submit naming none saves", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      [first | _rest] =
+        view
+        |> element("#editor-parts")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("button")
+        |> Enum.to_list()
+
+      assert LazyHTML.attribute(first, "type") == ["submit"]
+      assert LazyHTML.attribute(first, "value") == ["save"]
+
+      view
+      |> form("#editor-parts", parts: %{subject: "Uus"})
+      |> put_submitter("#editor-parts button[value=save]")
+      |> render_submit()
+
+      assert File.read!(Path.join([root, "order_offer", "subject.et.txt"])) == "Uus"
+    end
+
+    test "a submit with an unknown action neither saves nor converts", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      render_submit(with_target(view, "#editor"), "save", %{
+        "action" => "publish",
+        "parts" => %{"subject" => "x"}
+      })
+
+      assert File.read!(Path.join([root, "order_offer", "subject.et.txt"])) ==
+               "Pakkumine {{order_number}}\n"
+    end
+
+    test "fill the text from Markdown, keeping the other unsaved fields", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      html =
+        convert(view, "to_text", %{
+          subject: "Unsaved subject",
+          markdown: "**Tere** {{order_number}}",
+          html: "<p>Ignored</p>"
+        })
+
+      assert html =~ "not saved yet"
+      assert field(view, :text) == "Tere {{order_number}}"
+      assert field(view, :subject) == "Unsaved subject"
+      assert field(view, :markdown) == "**Tere** {{order_number}}"
+      assert field(view, :html) == "<p>Ignored</p>"
+      assert field(view, :label) == "Pakkumiskiri\n"
+
+      dir = Path.join(root, "order_offer")
+      assert File.read!(Path.join(dir, "text.et.txt")) == "Tere!\n\n{{documents_list}}\n"
+      refute File.exists?(Path.join(dir, "markdown.et.md"))
+      refute_received {:after_write, _paths}
+      refute_received {:after_change, _name}
+    end
+
+    test "fill the text from HTML when there is no Markdown", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      convert(view, "to_text", %{markdown: "  \n", html: "<p>Tere <b>{{order_number}}</b></p>"})
+
+      assert field(view, :text) == "Tere {{order_number}}"
+    end
+
+    test "Markdown to HTML fills the HTML field, keeping the rest", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      convert(view, "md_to_html", %{
+        text: "Unsaved text",
+        markdown: "**Pakkumine** {{order_number}}\n\n{{{raw_block}}}"
+      })
+
+      assert field(view, :html) ==
+               "<p><strong>Pakkumine</strong> {{order_number}}\n\n{{{raw_block}}}</p>"
+
+      assert field(view, :text) == "Unsaved text"
+      refute File.exists?(Path.join([root, "order_offer", "html.et.html"]))
+    end
+
+    test "with nothing to convert says so and calls nothing", %{tmp_dir: root} do
+      seed(root)
+      test_pid = self()
+
+      to_text = fn format, source ->
+        send(test_pid, {:converted, format})
+        source
+      end
+
+      markdown_to_html = fn markdown ->
+        send(test_pid, {:converted, :markdown})
+        markdown
+      end
+
+      view = mount_editor(root)
+      send(view.pid, {:put, %{convert: %{to_text: to_text, markdown_to_html: markdown_to_html}}})
+      select(view, "order_offer")
+
+      assert convert(view, "to_text", %{markdown: "", html: " "}) =~ "Nothing to convert"
+      assert convert(view, "md_to_html", %{markdown: ""}) =~ "Nothing to convert"
+      refute_received {:converted, _format}
+    end
+
+    test "a save after a conversion writes only the changed parts", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      convert(view, "md_to_html", %{markdown: "**Tere**"})
+
+      # Another session saves the subject meanwhile; the host re-renders.
+      File.write!(Path.join([root, "order_offer", "subject.et.txt"]), "Teine sessioon\n")
+      Overrides.reset_cache([root])
+      send(view.pid, {:put, %{sample_variables: %{"order_number" => "38"}}})
+
+      assert field(view, :html) == "<p><strong>Tere</strong></p>"
+      assert field(view, :subject) == "Pakkumine {{order_number}}\n"
+
+      html = save(view, %{})
+
+      assert html =~ "Saved."
+      dir = Path.join(root, "order_offer")
+      assert File.read!(Path.join(dir, "html.et.html")) == "<p><strong>Tere</strong></p>"
+      assert File.read!(Path.join(dir, "markdown.et.md")) == "**Tere**"
+      assert File.read!(Path.join(dir, "subject.et.txt")) == "Teine sessioon\n"
+      assert File.read!(Path.join(dir, "text.et.txt")) == "Tere!\n\n{{documents_list}}\n"
+      assert_received {:after_write, paths}
+
+      assert Enum.sort(paths) == [
+               Path.join(dir, "html.et.html"),
+               Path.join(dir, "markdown.et.md")
+             ]
+
+      # The form is drawn from the files again.
+      assert field(view, :subject) == "Teine sessioon\n"
+    end
+
+    test "converted values are dropped on another tab or template", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      convert(view, "to_text", %{markdown: "**Tere**"})
+      tab(view, "ru")
+      tab(view, "et")
+
+      assert field(view, :text) == "Tere!\n\n{{documents_list}}\n"
+      assert field(view, :markdown) == ""
+
+      convert(view, "to_text", %{markdown: "**Tere**"})
+      select(view, "_header-shop")
+      select(view, "order_offer")
+
+      assert field(view, :text) == "Tere!\n\n{{documents_list}}\n"
+    end
+
+    test "a failing converter is reported and logged, the fields unchanged",
+         %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: %{to_text: {Host, :failing_to_text}}})
+      select(view, "order_offer")
+
+      log =
+        capture_log(fn ->
+          assert convert(view, "to_text", %{markdown: "**Tere**"}) =~
+                   "Not converted: converter down"
+        end)
+
+      assert log =~ "to_text"
+      assert log =~ "failing_to_text/2"
+      assert Process.alive?(view.pid)
+      assert field(view, :text) == "Tere!\n\n{{documents_list}}\n"
+    end
+
+    test "a converter's refusal or odd result is an error, the field unchanged",
+         %{tmp_dir: root} do
+      seed(root)
+
+      for {callback, message} <- [
+            {:refusing_to_text, "Not converted: cannot convert this"},
+            {:shapeless_to_text, "Not converted: unexpected result"},
+            {:latin_to_text, "Not converted: unexpected result"}
+          ] do
+        view = mount_editor(root, %{convert: %{to_text: {Host, callback}}})
+        select(view, "order_offer")
+
+        html = convert(view, "to_text", %{markdown: "**Tere**"})
+
+        assert html =~ message
+        assert String.valid?(html)
+        assert field(view, :text) == "Tere!\n\n{{documents_list}}\n"
+      end
+    end
+
+    test "a field that is not UTF-8 is refused, nothing changed", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      # A form submit cannot carry it (Plug refuses the params); an event
+      # payload sent by other means can.
+      html =
+        render_click(with_target(view, "#editor"), "save", %{
+          "action" => "to_text",
+          "parts" => %{"markdown" => <<"Tere ", 0xE4>>, "subject" => "Uus"}
+        })
+
+      assert html =~ "Not converted: not valid UTF-8 text"
+      assert String.valid?(render(view))
+      assert field(view, :text) == "Tere!\n\n{{documents_list}}\n"
+      assert field(view, :subject) == "Pakkumine {{order_number}}\n"
+    end
+
+    test "a target part that is not UTF-8 on disk is not converted into",
+         %{tmp_dir: root} do
+      seed(root)
+      latin = <<"Tere ", 0xE4, "\n">>
+      put(root, "order_offer", "text.et.txt", latin)
+      view = mount_editor(root, %{convert: @convert})
+      select(view, "order_offer")
+
+      html = convert(view, "to_text", %{markdown: "**Tere**"})
+
+      assert html =~ "Not converted: Text"
+      refute has_element?(view, "#editor-parts textarea[name='parts[text]']")
+      save(view, %{})
+      assert File.read!(Path.join([root, "order_offer", "text.et.txt"])) == latin
+    end
+
+    test "conversion events are refused read-only or without the callback",
+         %{tmp_dir: root} do
+      seed(root)
+      test_pid = self()
+
+      to_text = fn _format, _source ->
+        send(test_pid, :converted)
+        "x"
+      end
+
+      for opts <- [
+            %{editable: false, convert: %{to_text: to_text}},
+            %{convert: %{markdown_to_html: fn _md -> "x" end}},
+            %{convert: %{to_text: fn _source -> "wrong arity" end}},
+            %{convert: :yes}
+          ] do
+        view = mount_editor(root)
+        send(view.pid, {:put, opts})
+        select(view, "order_offer")
+
+        render_submit(with_target(view, "#editor"), "save", %{
+          "action" => "to_text",
+          "parts" => %{"markdown" => "**Tere**"}
+        })
+
+        assert Process.alive?(view.pid)
+        refute render(view) =~ "Not converted"
+      end
+
+      refute_received :converted
     end
   end
 end

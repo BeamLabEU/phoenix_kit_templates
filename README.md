@@ -281,6 +281,7 @@ host adds this package's `lib/` to its sources.
   sample_variables={%{"order_number" => "37"}}
   after_write={{MyApp.EmailTemplates, :after_write}}
   after_change={{MyApp.EmailTemplates, :after_change}}
+  convert={%{to_text: {MyApp.Mail, :to_text}, markdown_to_html: {MyApp.Mail, :md_to_html}}}
 />
 ```
 
@@ -289,8 +290,9 @@ group of their own), edits `label`, `subject`, `text`, `markdown` and `html`
 per language, creates a template empty or as a copy, and deletes one after a
 confirmation. `name_prefixes` limits what it may write as well as what it
 shows; `editable={false}` makes it read-only. `preview(name, locale)` returns
-`{subject, html}` as strings (or `nil`), shown in an `<iframe sandbox>` that
-cannot run scripts. `after_write` receives the paths a save or copy created;
+`{subject, html}` or `{subject, html, text}` as strings (or `nil`); the HTML is
+shown in an `<iframe sandbox>` that cannot run scripts, and a text version adds
+a *Text* tab beside it. `after_write` receives the paths a save or copy created;
 `after_change` receives the template's name after any change on disk — a save
 that wrote or deleted files, a copy, a deleted template. If a callback or
 `preview` fails, the editor shows the error instead of crashing and
@@ -300,6 +302,19 @@ on its own. A part the user left alone is never written back over another
 session's change; an edited part wins, with no check that the file changed
 meanwhile. The callbacks run in the LiveView's process — keep them fast. The
 interface text is English. The full list of attributes is in the module docs.
+
+`convert` is optional; each converter adds a button to the form (none when
+read-only). `to_text(:markdown | :html, source)` backs *Fill text from
+content*: the form's Markdown if it is not blank, else its HTML, as plain text
+in the Text field. `markdown_to_html(markdown)` backs *Markdown → HTML*: the
+form's Markdown rendered into the HTML field. A converter returns a string or
+`{:error, reason}`. Nothing is saved: the result waits in the form, with the
+user's other unsaved fields as they were, and Save writes it like any edited
+part. Placeholders are passed as typed — a converter that should keep
+`{{name}}` for later must not substitute it. The buttons submit the form with
+an `action` value that LiveView's client sends from `phoenix_live_view` 1.0 on,
+this package's minimum (`~> 1.0`; tested on 1.2.12); Save is the first button,
+so a submit with none named saves.
 
 The editor is compiled only when `phoenix_live_view` is present at the time
 this package is compiled: a host that adds LiveView later needs
