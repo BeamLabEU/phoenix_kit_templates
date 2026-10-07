@@ -142,7 +142,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       socket = assign(socket, assigns)
 
       socket =
-        if editable?(socket), do: socket, else: assign(socket, confirm_delete?: false)
+        if editable?(socket.assigns), do: socket, else: assign(socket, confirm_delete?: false)
 
       socket = socket |> load_templates() |> settle_draft() |> keep_selection()
       {:ok, refresh_preview(socket, previous_files)}
@@ -161,7 +161,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     def handle_event("locale", %{"locale" => locale}, socket) do
       locale = if locale == "", do: nil, else: locale
 
-      if socket.assigns.selected && locale in tabs(socket) do
+      if socket.assigns.selected && locale in tabs(socket.assigns) do
         {:noreply, socket |> assign(locale: locale, notice: nil) |> load_contents() |> preview()}
       else
         {:noreply, socket}
@@ -178,10 +178,16 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     def handle_event("create", %{"create" => %{"name" => name} = params}, socket)
         when is_binary(name) do
-      if editable?(socket) do
-        {:noreply, create(socket, String.trim(name), Map.get(params, "copy_from", ""))}
-      else
-        {:noreply, socket}
+      case Map.get(params, "copy_from", "") do
+        copy_from when is_binary(copy_from) ->
+          if editable?(socket.assigns) do
+            {:noreply, create(socket, String.trim(name), copy_from)}
+          else
+            {:noreply, socket}
+          end
+
+        _malformed ->
+          {:noreply, socket}
       end
     end
 
@@ -228,22 +234,28 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         end)
 
       paths = for {_part, {:ok, paths}} <- results, path <- paths, do: path
+      saved = for {part, {:ok, _paths}} <- results, do: part
       errors = for {part, {:error, reason}} <- results, do: {part, reason}
       notified = notify_written(socket, paths)
 
-      notice =
-        cond do
-          errors != [] -> {:error, "Not saved: " <> describe_errors(errors)}
-          results == [] -> {:info, "No changes."}
-          true -> {:info, "Saved."}
-        end
-
       socket
-      |> assign(notice: with_notified(notice, notified))
+      |> assign(notice: with_notified(save_notice(saved, errors), notified))
       |> load_templates()
       |> settle_draft()
       |> load_contents()
       |> preview()
+    end
+
+    defp save_notice([], []), do: {:info, "No changes."}
+    defp save_notice(_saved, []), do: {:info, "Saved."}
+    defp save_notice([], errors), do: {:error, "Not saved: " <> describe_errors(errors)}
+
+    # Some files did change: saying only "Not saved" would hide that.
+    defp save_notice(saved, errors) do
+      {:error,
+       "Saved: " <>
+         Enum.map_join(saved, ", ", &part_title/1) <>
+         ". Not saved: " <> describe_errors(errors)}
     end
 
     defp change(%{invalid: true}, _value), do: :none
@@ -350,7 +362,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
 
     defp keep_selection(socket) do
       if visible?(socket, socket.assigns.selected) do
-        socket = if socket.assigns.locale in tabs(socket), do: socket, else: reset_locale(socket)
+        socket =
+          if socket.assigns.locale in tabs(socket.assigns), do: socket, else: reset_locale(socket)
+
         load_contents(socket)
       else
         deselect(socket)
@@ -537,13 +551,13 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     ## Queries
 
     # With no usable root there is nothing to write to, whatever the host says.
-    defp editable?(socket), do: socket.assigns.editable == true and is_binary(socket.assigns.root)
+    defp editable?(assigns), do: assigns.editable == true and is_binary(assigns.root)
 
     defp allowed?(socket, name) do
       is_binary(name) and String.starts_with?(name, socket.assigns.name_prefixes)
     end
 
-    defp writable?(socket, name), do: editable?(socket) and visible?(socket, name)
+    defp writable?(socket, name), do: editable?(socket.assigns) and visible?(socket, name)
 
     # Listed templates are already filtered by prefix; a draft is checked here,
     # since the host may have changed the prefixes since it was created.
@@ -561,20 +575,20 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       end
     end
 
-    defp tabs(socket), do: socket.assigns.locales ++ [nil]
+    defp tabs(assigns), do: assigns.locales ++ [nil]
 
     # The first tab that has a file, so a locale-less shared part opens on
     # its fallback tab rather than on an empty first language.
     defp initial_locale(socket, name) do
       files = files_of(socket, name)
-      tabs = tabs(socket)
+      tabs = tabs(socket.assigns)
       Enum.find(tabs, hd(tabs), fn tab -> Enum.any?(files, &(&1.locale == tab)) end)
     end
 
     defp caption(socket, name, files) do
       labels = for %{part: :label} = file <- files, into: %{}, do: {file.locale, file.path}
 
-      Enum.find_value(tabs(socket), name, fn tab ->
+      Enum.find_value(tabs(socket.assigns), name, fn tab ->
         with path when is_binary(path) <- labels[tab],
              {:ok, label} <- File.read(path),
              true <- String.valid?(label),
@@ -623,9 +637,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         assign(assigns,
           messages: Enum.reject(assigns.templates, &String.starts_with?(&1.name, "_")),
           shared: Enum.filter(assigns.templates, &String.starts_with?(&1.name, "_")),
-          tabs: assigns.locales ++ [nil],
+          tabs: tabs(assigns),
           parts: @parts,
-          can_edit: assigns.editable == true and is_binary(assigns.root)
+          can_edit: editable?(assigns)
         )
 
       ~H"""
@@ -669,11 +683,16 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
               <input
                 type="text"
                 name="create[name]"
+                aria-label="Template name"
                 class="input input-sm w-full font-mono"
                 placeholder={List.first(@name_prefixes, "name")}
                 autocomplete="off"
               />
-              <select name="create[copy_from]" class="select select-sm w-full">
+              <select
+                name="create[copy_from]"
+                aria-label="Start from"
+                class="select select-sm w-full"
+              >
                 <option value="">Empty</option>
                 <option :for={template <- @templates} value={template.name}>
                   Copy of {template.name}

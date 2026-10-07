@@ -275,6 +275,24 @@ defmodule PhoenixKit.Templates.EditorTest do
       refute_received {:after_write, _paths}
     end
 
+    test "a save that is partly refused says which parts were saved", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      html =
+        save(view, %{
+          subject: "New subject",
+          text: "",
+          html: String.duplicate("a", Overrides.max_bytes() + 1)
+        })
+
+      assert html =~ "Saved: Subject, Text. Not saved: HTML: larger than"
+      assert File.read!(Path.join([root, "order_offer", "subject.et.txt"])) == "New subject"
+      refute File.exists?(Path.join([root, "order_offer", "text.et.txt"]))
+      assert_received {:after_write, [_subject]}
+    end
+
     test "a failing after_write is reported and logged, not a crash", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root, %{after_write: {Host, :failing_after_write}})
@@ -358,6 +376,21 @@ defmodule PhoenixKit.Templates.EditorTest do
   end
 
   describe "creating" do
+    test "the name and source fields have accessible names", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+
+      assert has_element?(
+               view,
+               ~s(#editor-create input[name="create[name]"][aria-label="Template name"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#editor-create select[name="create[copy_from]"][aria-label="Start from"])
+             )
+    end
+
     test "an empty template exists once its first part is saved", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root)
@@ -525,6 +558,19 @@ defmodule PhoenixKit.Templates.EditorTest do
       })
 
       assert has_element?(view, "#editor-create")
+    end
+
+    test "a create event whose copy source is not a string is ignored", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+
+      render_submit(with_target(view, "#editor"), "create", %{
+        "create" => %{"name" => "order_x", "copy_from" => %{"a" => "b"}}
+      })
+
+      assert Process.alive?(view.pid)
+      assert has_element?(view, "#editor-create")
+      refute File.exists?(Path.join(root, "order_x"))
     end
 
     test "cannot copy a template outside the prefixes", %{tmp_dir: root} do
