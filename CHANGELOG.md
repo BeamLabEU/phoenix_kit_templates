@@ -11,9 +11,11 @@
   the root (symlinks included); writes are atomic (synced, then renamed; a
   replaced file keeps its permissions) and capped at 256 KiB of UTF-8; the
   cache is reset for the root after every change, a failed
-  `delete_template/2` included. Errors are `{:error, reason}`. `write/5`
-  returns the paths it created — the template directory too when the write
-  is its first part file — so a host can fix their ownership.
+  `delete_template/2` included. `delete/4` removes the template directory
+  along with its last file, since git does not track an empty one. Errors are
+  `{:error, reason}`. `write/5` returns the paths it created — the template
+  directory too when the write is its first part file — so a host can fix
+  their ownership.
   `copy_template/3` copies every regular file of a template directory, a
   host's own files beside the parts included, through a hidden directory
   renamed into place, and returns the new directory and its files.
@@ -30,7 +32,9 @@
   `nil` (a `{:safe, _}` is escaped, anything else is an error); it is not
   called for a template with no files, and is called again when the host
   re-renders with a new callback, new variables or changed files. A file that
-  is not UTF-8 is shown read-only and never written over. Compiled only when
+  is not UTF-8 is shown read-only and never written over. A save that is
+  partly refused names the parts saved and the parts refused; the last save
+  wins, with no check for another session's change. Compiled only when
   `phoenix_live_view` is present; it is an optional dependency, and nothing
   depends on PhoenixKit.
 

@@ -74,8 +74,13 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         language tab. Saving writes the parts that changed; a part saved empty
         has its file deleted, so the message falls back to the next file in
         line — and a template left with no files loses its directory, staying
-        open as an unsaved one. Line breaks are stored as `\\n`. Each tab is saved on its own:
-        switching tabs or templates, or a reconnect, drops unsaved changes.
+        open as an unsaved one. Line breaks are stored as `\\n`. A save that
+        is partly refused (one part too large, say) names the parts it saved
+        and the ones it did not. Each tab is saved on its own: switching tabs
+        or templates, or a reconnect, drops unsaved changes.
+      * The last save wins: a part is written when it differs from what this
+        editor last read, with no check that another session changed the
+        file since.
       * Creates a template empty (it exists on disk once its first part is
         saved) or as a copy of a listed one — every file in its directory,
         including any of the host's own beside the parts

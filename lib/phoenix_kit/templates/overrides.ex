@@ -68,9 +68,10 @@ defmodule PhoenixKit.Templates.Overrides do
   this package — there is no point in this package's compilation at which they
   could be read. So they are read at runtime and cached in `:persistent_term`,
   including the *absence* of a file, since a missing override is the common case
-  and would otherwise cost a `File.stat` on every send. Files cannot change
-  without a deploy; `reset_cache/0` exists for tests and dev reloads — and the
-  write functions below call it for their own root.
+  and would otherwise cost a `File.stat` on every send. Files change through a
+  deploy, which starts a fresh VM, or through the write functions below, which
+  reset the cache for their own root; `reset_cache/0` covers the rest — tests,
+  dev reloads, files edited by hand.
 
   ## Path safety
 
@@ -190,7 +191,9 @@ defmodule PhoenixKit.Templates.Overrides do
   @doc """
   Drops cached override lookups.
 
-  Only tests and dev reloads need this: a deploy starts a fresh VM.
+  `write/5` and the other write functions call this for their root. Otherwise
+  only tests, dev reloads and files changed by hand need it: a deploy starts a
+  fresh VM.
 
   Pass a list of roots to clear only the entries that consulted them. That
   scoping is what lets an async test clear its own `tmp_dir` without erasing a

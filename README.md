@@ -159,7 +159,8 @@ be safe to join onto a path.
 The database schema this replaces carried both, for a reason that no longer
 exists: `name` identified the template while `slug` addressed the admin
 editor's routes (`…/templates/:slug`), and `display_name` labelled its list
-view. With no editor and no routes, a second identifier addresses nothing. A
+view. Nothing here routes by slug — the editor component (see below)
+addresses a template by its name — so a second identifier addresses nothing. A
 human-readable label, if one is ever wanted, is a Gettext call in the sending
 package rather than a stored column — the same place its subject and body
 already live. A host that edits its own files can keep one as a `label` file
@@ -252,6 +253,8 @@ Overrides.list(root)
   permissions), at most 256 KiB of UTF-8 per file.
 - Resets the cache for the root, so the next render sees the change at once.
   Pass the same root string the renderer gets in `:paths`.
+- `delete/4` removes the template directory along with its last file: git does
+  not track an empty directory.
 - Every refusal is `{:error, reason}`. `write/5` returns the paths it created
   (the template directory first when this is its first part file, then the
   file) — for example, to fix their owner.
@@ -290,8 +293,9 @@ cannot run scripts. `after_write` receives the paths a save or copy created;
 if it or `preview` fails, the editor shows the error instead of crashing and
 logs it. `sample_variables` is one map for every template, so include the
 layout's variables if headers and footers use them. Each language tab is saved
-on its own. The interface text is English. The full list of attributes is in
-the module docs.
+on its own, and the last save wins: there is no check that another session
+changed a file meanwhile. The interface text is English. The full list of
+attributes is in the module docs.
 
 ## No runtime dependencies
 
