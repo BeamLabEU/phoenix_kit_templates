@@ -39,7 +39,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         select, save, create, copy and delete. Anything but a list counts as
         `[]`, and entries that are not non-empty strings are dropped. Default
         `[]`, which shows nothing.
-      * `:locales` — the language tabs, in order. A last tab, *Fallback*, edits
+      * `:locales` — the language tabs, in order; anything but a list of
+        non-empty strings is cleaned the way `:name_prefixes` is. A last tab, *Fallback*, edits
         the locale-less files (`text.txt`), used for any language without its
         own file.
       * `:preview` — `{module, function}` or a 2-arity function called as
@@ -84,7 +85,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         line — and a template left with no files loses its directory, staying
         open as an unsaved one. Line breaks are stored as `\\n`. A save that
         is partly refused (one part too large, say) names the parts it saved
-        and the ones it did not. Each tab is saved on its own: switching tabs
+        and the ones it did not, and what was typed into those stays in the
+        form to be fixed and saved again. Each tab is saved on its own: switching tabs
         or templates, or a reconnect, drops unsaved changes.
       * A part is written only when the user changed it from what the form
         was given (on opening the template or tab, or after a save): a part
@@ -150,6 +152,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
          locale: nil,
          contents: %{},
          baseline: %{},
+         retained: %{},
          confirm_delete?: false,
          preview_result: nil,
          missing: [],
@@ -160,7 +163,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     @impl true
     def update(assigns, socket) do
       previous_files = files_of(socket, socket.assigns.selected)
-      socket = socket |> assign(assigns) |> sanitize_prefixes()
+      socket = socket |> assign(assigns) |> sanitize_options()
 
       socket =
         if editable?(socket.assigns), do: socket, else: assign(socket, confirm_delete?: false)
@@ -263,6 +266,13 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       saved = for {part, {:ok, _paths}} <- results, do: part
       errors = for {part, {:error, reason}} <- results, do: {part, reason}
 
+      # What the user typed into a part that was refused: kept in the form, not
+      # replaced by what is on disk, so the edit can be fixed and saved again.
+      retained =
+        for {part, _reason} <- errors,
+            into: %{},
+            do: {part, normalize_newlines(params[Atom.to_string(part)])}
+
       notified =
         socket
         |> notify_written(paths)
@@ -273,6 +283,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       |> load_templates()
       |> redraft()
       |> load_contents()
+      |> assign(retained: retained)
       |> preview()
     end
 
@@ -448,6 +459,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         draft?: false,
         contents: %{},
         baseline: %{},
+        retained: %{},
         preview_result: nil,
         missing: [],
         confirm_delete?: false
@@ -457,10 +469,11 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     # What the form is drawn from. `baseline` is what the form was last given
     # for this template and tab (on select, a tab switch or a save); a parent
     # re-render refreshes `contents` from disk but keeps it, so `save/2` can
-    # tell a part the user left alone from one they edited.
+    # tell a part the user left alone from one they edited. `retained` holds
+    # the text of parts a save refused; it lasts until the next load.
     defp load_contents(socket) do
       socket = refresh_contents(socket)
-      assign(socket, baseline: baseline(socket.assigns.contents))
+      assign(socket, baseline: baseline(socket.assigns.contents), retained: %{})
     end
 
     defp refresh_contents(socket) do
@@ -643,12 +656,23 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     end
 
     # A host's mistake (no list, an empty prefix that would match every name)
-    # allows nothing rather than everything, or a crash.
-    defp sanitize_prefixes(socket) do
-      prefixes = socket.assigns.name_prefixes
-      prefixes = if is_list(prefixes), do: prefixes, else: []
-      assign(socket, name_prefixes: Enum.filter(prefixes, &(is_binary(&1) and &1 != "")))
+    # allows nothing rather than everything, or a crash. The same goes for
+    # `locales` and `sample_variables`, which the page would otherwise crash on.
+    defp sanitize_options(socket) do
+      %{name_prefixes: prefixes, locales: locales, sample_variables: variables} =
+        socket.assigns
+
+      assign(socket,
+        name_prefixes: non_empty_strings(prefixes),
+        locales: locales |> non_empty_strings() |> Enum.uniq(),
+        sample_variables: if(is_map(variables), do: variables, else: %{})
+      )
     end
+
+    defp non_empty_strings(list) when is_list(list),
+      do: Enum.filter(list, &(is_binary(&1) and &1 != ""))
+
+    defp non_empty_strings(_other), do: []
 
     defp writable?(socket, name), do: editable?(socket.assigns) and visible?(socket, name)
 
@@ -865,6 +889,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
                 id={"#{@id}-part-#{part}"}
                 part={part}
                 file={@contents[part]}
+                retained={@retained[part]}
               />
               <p class="text-xs opacity-70">
                 Each language is saved on its own: switching tabs or templates drops unsaved
@@ -947,6 +972,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     attr :id, :string, required: true
     attr :part, :atom, required: true
     attr :file, :map, default: nil
+    attr :retained, :string, default: nil
 
     defp part_field(%{file: %{invalid: true}} = assigns) do
       ~H"""
@@ -962,7 +988,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     defp part_field(assigns) do
       assigns =
         assign(assigns,
-          value: if(assigns.file, do: assigns.file.content, else: ""),
+          value: assigns.retained || if(assigns.file, do: assigns.file.content, else: ""),
           rows: Map.fetch!(@part_rows, assigns.part)
         )
 

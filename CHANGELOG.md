@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 - 2026-10-07
 
 ### Added
 
@@ -43,6 +43,13 @@
 
 ### Fixed
 
+- The editor no longer throws away what was typed into a part a save refused
+  (one too large, a write error): the text stays in the form, still an edit to
+  fix and save again. Before, the form was redrawn from disk, so the part came
+  back as it was on disk.
+- The editor cleans `locales` (anything but a list of non-empty strings, and
+  duplicates) and `sample_variables` (anything but a map) the way it already
+  cleaned `name_prefixes`, instead of crashing the page.
 - Subject normalization no longer takes quadratic time on long whitespace runs
   without a line break. Unicode whitespace around a `\r`/`\n` is now collapsed
   along with the break, matching the documented single-space behavior.

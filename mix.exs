@@ -2,7 +2,7 @@ defmodule PhoenixKitTemplates.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/BeamLabEU/phoenix_kit_templates"
-  @version "0.2.2"
+  @version "0.2.3"
 
   def project do
     [

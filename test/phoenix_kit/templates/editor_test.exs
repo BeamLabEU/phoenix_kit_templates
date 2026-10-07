@@ -314,6 +314,50 @@ defmodule PhoenixKit.Templates.EditorTest do
       assert_received {:after_write, [_subject]}
     end
 
+    test "malformed locales and sample variables are cleaned, not a crash", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{locales: ["et", "", :ru, "et", "en"], sample_variables: [:x]})
+
+      html = select(view, "order_offer")
+
+      assert html =~ "Fallback"
+      assert html =~ "Pakkumine"
+      refute has_element?(view, "#editor [role=tab][phx-value-locale='ru']")
+      assert length(Regex.scan(~r/phx-value-locale="et"/, html)) == 1
+
+      view2 = mount_editor(root, %{locales: "et"})
+      assert select(view2, "order_offer") =~ "Fallback"
+    end
+
+    test "a part the write refused stays in the form, so the edit is not lost", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+      big = String.duplicate("a", Overrides.max_bytes() + 1)
+
+      save(view, %{subject: "New subject", html: big})
+
+      assert view |> element("#editor-parts textarea[name='parts[html]']") |> render() =~ "aaaa"
+      # What was saved shows what is on disk now.
+      assert view |> element("#editor-parts textarea[name='parts[subject]']") |> render() =~
+               "New subject"
+
+      # Still an edit to retry: fixing the part and saving writes it.
+      save(view, %{html: "<p>small</p>"})
+      assert File.read!(Path.join([root, "order_offer", "html.et.html"])) == "<p>small</p>"
+    end
+
+    test "a refused part is dropped from the form on another tab", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root)
+      select(view, "order_offer")
+
+      save(view, %{html: String.duplicate("a", Overrides.max_bytes() + 1)})
+      tab(view, "ru")
+
+      refute view |> element("#editor-parts textarea[name='parts[html]']") |> render() =~ "aaaa"
+    end
+
     test "a failing after_write is reported and logged, not a crash", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root, %{after_write: {Host, :failing_after_write}})
