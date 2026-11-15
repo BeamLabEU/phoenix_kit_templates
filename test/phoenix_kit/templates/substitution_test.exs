@@ -34,6 +34,54 @@ defmodule PhoenixKit.Templates.SubstitutionTest do
     end
   end
 
+  describe "split/1" do
+    @samples [
+      "",
+      "plain text",
+      "{{a}}",
+      "{{{a}}}",
+      "x{{a}}y{{{ b }}}z",
+      "{{a}}{{b}}{{{c}}}",
+      "{{{{a}}}}",
+      "{{{a}}",
+      "{{a}}}",
+      "{{ }} {{1abc}} {{a-b}} {single} {{unclosed {{}}",
+      "Hi {{ user_name }}, <a href=\"{{url}}\">go</a> {{{table}}}"
+    ]
+
+    test "alternates text and placeholders, and joins back to the input" do
+      for content <- @samples do
+        pieces = Substitution.split(content)
+
+        assert rem(length(pieces), 2) == 1, inspect(content)
+        assert Enum.join(pieces) == content
+      end
+    end
+
+    test "the odd pieces are exactly what variables/1 and substitute/3 see" do
+      for content <- @samples do
+        placeholders = content |> Substitution.split() |> Enum.drop(1) |> Enum.take_every(2)
+        names = placeholders |> Enum.flat_map(&Substitution.variables/1) |> Enum.uniq()
+
+        assert names == Substitution.variables(content), inspect(content)
+
+        # Every placeholder is one whole match: substituting it alone consumes it.
+        for placeholder <- placeholders do
+          [name] = Substitution.variables(placeholder)
+          assert Substitution.substitute(placeholder, %{name => "V"}) == "V"
+        end
+
+        # The text pieces hold no placeholder.
+        texts = content |> Substitution.split() |> Enum.take_every(2)
+        assert Enum.all?(texts, &(Substitution.variables(&1) == []))
+      end
+    end
+
+    test "keeps the braces and inner whitespace as written" do
+      assert Substitution.split("{{{ raw }}}") == ["", "{{{ raw }}}", ""]
+    end
+  end
+
   describe "substitute/2" do
     test "accepts atom and string keys alike" do
       # Callers write %{user_email: …}; content exported from the old database

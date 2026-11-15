@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`Substitution.split/1`** splits content into literal text and
+  placeholders (`["Hi ", "{{name}}", "!"]`): even indices are text, odd ones
+  placeholders as written, and joining the list gives the input back. It uses
+  the grammar `substitute/3` uses, so a caller that has to protect
+  placeholders from another parser no longer needs its own copy of the
+  placeholder regex. `phoenix_kit`'s Markdown email renderer kept one, which
+  would have silently disagreed with this package if the grammar changed.
+
 ## 0.2.4 - 2026-10-07
 
 ### Added

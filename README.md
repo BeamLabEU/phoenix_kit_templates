@@ -104,7 +104,8 @@ They differ from the other parts in what `render/4` does with them:
   `<a href="%7B%7Burl%7D%7D">Confirm</a>`, which
   `Substitution.substitute/3` cannot substitute. One approach is to protect
   placeholders with renderer-safe tokens and restore them before substituting
-  into the HTML with `escape: true`. `missing_variables/4` still reports the
+  into the HTML with `escape: true`; `Substitution.split/1` finds them with the
+  same grammar `substitute/3` uses. `missing_variables/4` still reports the
   placeholders of a `markdown` part that the variables do not bind — those the
   caller is going to substitute.
 - `layout` holds the *name* of a layout group (e.g. `billing`) and is

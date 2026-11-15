@@ -136,6 +136,33 @@ defmodule PhoenixKit.Templates.Substitution do
   def variables(_content), do: []
 
   @doc """
+  Splits `content` into literal text and placeholders, as `substitute/3`
+  sees it.
+
+  The result alternates: even indices are literal text (possibly `""`), odd
+  indices are placeholders exactly as written, braces and inner whitespace
+  included. It always has an odd length, so it starts and ends with text, and
+  joining it gives back `content`.
+
+  For a caller that must move placeholders out of the way of another parser
+  (a Markdown renderer, a sanitizer) and put them back before substituting —
+  with the same grammar as `substitute/3`, rather than a copy of its regex.
+
+      iex> PhoenixKit.Templates.Substitution.split("Hi {{ name }}, {{{link}}}!")
+      ["Hi ", "{{ name }}", ", ", "{{{link}}}", "!"]
+
+      iex> PhoenixKit.Templates.Substitution.split("{{a}}{{b}}")
+      ["", "{{a}}", "", "{{b}}", ""]
+
+      iex> PhoenixKit.Templates.Substitution.split("no {{ }} here")
+      ["no {{ }} here"]
+  """
+  @doc since: "0.2.5"
+  @spec split(String.t()) :: [String.t()]
+  def split(content) when is_binary(content),
+    do: Regex.split(@placeholder, content, include_captures: true)
+
+  @doc """
   Replaces every bound placeholder in `content` with plain semantics: neither
   `{{name}}` nor `{{{name}}}` is escaped. Equivalent to `substitute/3` with
   `escape: false`.
