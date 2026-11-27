@@ -41,9 +41,32 @@ defmodule PhoenixKit.Templates.CSPTest do
       end
     end
 
+    # A quoted value ends its attribute: the next one needs no space before it.
+    test "finds a nonce written right after a quoted value" do
+      for html <- [
+            ~s(<style media="print"nonce=other>a{}</style>),
+            ~s(<style data-a='x'nonce="y">a{}</style>),
+            ~s(<style/nonce=own>a{}</style>)
+          ] do
+        assert CSP.stamp_styles(html, "n1") == html
+      end
+    end
+
     test "does not take another attribute or a value for a nonce" do
-      assert CSP.stamp_styles(~s(<style data-nonce="x" title="a nonce here">a{}</style>), "n1") ==
-               ~s(<style nonce="n1" data-nonce="x" title="a nonce here">a{}</style>)
+      for attributes <- [
+            ~s( data-nonce="x" title="a nonce here"),
+            ~s( title="nonce"),
+            " data-nonce=x",
+            " media=/nonce/x",
+            ~s( title="x"data-nonce="y"),
+            ~s( a=b="x"nonce),
+            # A = where a name begins is part of that name, quotes and all.
+            ~s( ="x"nonce),
+            ~s( a="1"="x"nonce)
+          ] do
+        assert CSP.stamp_styles("<style#{attributes}>a{}</style>", "n1") ==
+                 ~s(<style nonce="n1"#{attributes}>a{}</style>)
+      end
     end
 
     test "never touches <script>, its text included" do

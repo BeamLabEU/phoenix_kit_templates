@@ -72,13 +72,18 @@ defmodule PhoenixKit.Templates.CSP do
     /isx
   end
 
-  # `rest` is the opening tag after its name. Values are blanked first, so that
-  # only an attribute named `nonce` counts.
+  # `rest` is the opening tag after its name. It is read one attribute at a
+  # time, as HTML does, so that only an attribute named `nonce` counts: not a
+  # value, and not the end of another name. A quoted value ends its attribute,
+  # with or without a space after it; a `=` where a name begins is part of the
+  # name.
   defp nonced?(rest) do
-    names =
-      Regex.replace(~r/=[ \t\n\f\r]*(?:"[^"]*"|'[^']*'|[^ \t\n\f\r>]+)/, rest, "=")
-
-    Regex.match?(~r/[ \t\n\f\r\/]nonce(?=[ \t\n\f\r=\/>])/i, names)
+    ~r/
+      ([^ \t\n\f\r\/>][^ \t\n\f\r\/>=]*+)
+      (?:[ \t\n\f\r]*+=[ \t\n\f\r]*+(?:"[^"]*+"|'[^']*+'|[^ \t\n\f\r>]*+))?+
+    /x
+    |> Regex.scan(rest, capture: :all_but_first)
+    |> Enum.any?(fn [name] -> String.downcase(name) == "nonce" end)
   end
 
   # The one call into PhoenixKit.
