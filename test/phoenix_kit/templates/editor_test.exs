@@ -75,6 +75,12 @@ defmodule PhoenixKit.Templates.EditorTest do
       {subject, html, "Hello from #{name} <as text>"}
     end
 
+    def preview_styled(_name, _locale),
+      do: {"S", "<style>p{color:red}</style><p>Styled</p>"}
+
+    def preview_scripted(_name, _locale),
+      do: {"S", "<style>p{color:red}</style><p>Styled</p><script>x()</script>"}
+
     # Crude stand-ins for a host's Markdown renderer: like a real one, they
     # leave a placeholder they are given no value for as it is.
     def to_text(:markdown, markdown), do: String.replace(markdown, "**", "")
@@ -172,6 +178,16 @@ defmodule PhoenixKit.Templates.EditorTest do
     |> LazyHTML.from_fragment()
     |> LazyHTML.text()
     |> String.replace_prefix("\n", "")
+  end
+
+  # The document the preview's iframe holds.
+  defp srcdoc(view) do
+    view
+    |> element("#editor-preview iframe")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.attribute("srcdoc")
+    |> hd()
   end
 
   @convert %{to_text: {Host, :to_text}, markdown_to_html: {Host, :markdown_to_html}}
@@ -842,6 +858,74 @@ defmodule PhoenixKit.Templates.EditorTest do
       select(view, "order_offer")
 
       refute has_element?(view, "#editor-preview")
+    end
+  end
+
+  describe "the preview under a nonce Content-Security-Policy" do
+    @styled ~s|<style>p{color:red}</style><p>Styled</p>|
+
+    test "stamps the host's style_nonce on the previewed styles only", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: {Host, :preview_styled}, style_nonce: "abc123"})
+      select(view, "order_offer")
+
+      assert srcdoc(view) == ~s|<style nonce="abc123">p{color:red}</style><p>Styled</p>|
+    end
+
+    test "shows a message with a script in it unstamped", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: {Host, :preview_scripted}, style_nonce: "abc123"})
+      select(view, "order_offer")
+
+      assert srcdoc(view) == @styled <> "<script>x()</script>"
+    end
+
+    test "leaves the preview as it is without a nonce", %{tmp_dir: root} do
+      seed(root)
+
+      for opts <- [%{}, %{style_nonce: nil}, %{style_nonce: ""}] do
+        view = mount_editor(root, Map.put(opts, :preview, {Host, :preview_styled}))
+        select(view, "order_offer")
+
+        assert srcdoc(view) == @styled
+      end
+    end
+
+    test "follows the nonce the host passes now", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: {Host, :preview_styled}, style_nonce: "first"})
+      select(view, "order_offer")
+
+      send(view.pid, {:put, %{style_nonce: "second"}})
+      assert srcdoc(view) =~ ~s(<style nonce="second">)
+
+      send(view.pid, {:put, %{style_nonce: nil}})
+      assert srcdoc(view) == @styled
+    end
+
+    test "does not send the preview again when something else changes", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: {Host, :preview_styled}, style_nonce: "abc123"})
+      select(view, "order_offer")
+
+      diff = reply_diff(view, fn -> view |> element("#editor-delete") |> render_click() end)
+
+      assert diff =~ "and all its files?"
+      refute diff =~ "Styled"
+    end
+
+    test "never reaches the files or what the renderer gives", %{tmp_dir: root} do
+      seed(root)
+      put(root, "order_offer", "html.et.html", "<style>p{}</style>")
+      view = mount_editor(root, %{preview: :render, style_nonce: "abc123"})
+      select(view, "order_offer")
+
+      assert srcdoc(view) == ~s(<style nonce="abc123">p{}</style>)
+
+      assert Templates.render("order_offer", %{}, %{}, locale: "et", paths: [root]).html ==
+               "<style>p{}</style>"
+
+      assert File.read!(Path.join([root, "order_offer", "html.et.html"])) == "<style>p{}</style>"
     end
   end
 
@@ -1609,6 +1693,87 @@ defmodule PhoenixKit.Templates.EditorTest do
 
       assert field(view, :text) == "Tere"
       assert field(view, :subject) == "Unsaved subject"
+    end
+  end
+end
+
+defmodule PhoenixKit.Templates.EditorCoreNonceTest do
+  # Not async: it defines `PhoenixKitWeb.CSP`, which the whole VM then sees.
+  # ExUnit runs such modules after the async ones.
+  use ExUnit.Case, async: false
+
+  import Phoenix.ConnTest, only: [build_conn: 0]
+  import Phoenix.LiveViewTest
+
+  alias PhoenixKit.Templates.CSP
+  alias PhoenixKit.Templates.EditorTest.Host
+
+  @endpoint PhoenixKit.Templates.TestEndpoint
+  @moduletag :tmp_dir
+
+  # What the editor reads of PhoenixKit's module: `nonce/1`.
+  setup do
+    Module.create(
+      PhoenixKitWeb.CSP,
+      quote do
+        def nonce(:style),
+          do: Application.get_env(:phoenix_kit_templates, :stub_style_nonce, "core-nonce")
+      end,
+      Macro.Env.location(__ENV__)
+    )
+
+    on_exit(fn ->
+      Application.delete_env(:phoenix_kit_templates, :stub_style_nonce)
+      :code.purge(PhoenixKitWeb.CSP)
+      :code.delete(PhoenixKitWeb.CSP)
+    end)
+  end
+
+  defp preview_srcdoc(root, opts) do
+    File.mkdir_p!(Path.join(root, "order_offer"))
+    File.write!(Path.join([root, "order_offer", "text.txt"]), "Tere")
+
+    opts =
+      Map.merge(
+        %{
+          root: root,
+          name_prefixes: ["order_"],
+          preview: {Host, :preview_styled}
+        },
+        opts
+      )
+
+    {:ok, view, _html} =
+      live_isolated(build_conn(), Host, session: %{"opts" => opts, "test_pid" => self()})
+
+    view |> element("#editor [phx-click=select][phx-value-name=order_offer]") |> render_click()
+
+    view
+    |> element("#editor-preview iframe")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.attribute("srcdoc")
+    |> hd()
+  end
+
+  test "the preview takes PhoenixKit's page nonce", %{tmp_dir: root} do
+    assert CSP.nonce(:style) == "core-nonce"
+    assert preview_srcdoc(root, %{}) =~ ~s(<style nonce="core-nonce">)
+  end
+
+  test "the host's style_nonce wins over PhoenixKit's", %{tmp_dir: root} do
+    srcdoc = preview_srcdoc(root, %{style_nonce: "mine"})
+
+    assert srcdoc =~ ~s(<style nonce="mine">)
+    refute srcdoc =~ "core-nonce"
+  end
+
+  test "an empty or missing page nonce stamps nothing", %{tmp_dir: root} do
+    for value <- [nil, ""] do
+      Application.put_env(:phoenix_kit_templates, :stub_style_nonce, value)
+
+      assert CSP.nonce(:style) == nil
+      assert preview_srcdoc(root, %{}) =~ "<style>"
     end
   end
 end

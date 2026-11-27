@@ -7,7 +7,9 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     lists as an optional dependency: a host without it gets the renderer and
     the write API and none of this. It depends on nothing else — no PhoenixKit,
     no Gettext backend, no host assets. The markup is HEEx with daisyUI class
-    names, so a Tailwind host must scan this package's `lib/` for them.
+    names, so a Tailwind host must scan this package's `lib/` for them. It
+    renders no inline `<style>`, `<script>` or event handler of its own; for
+    the previewed message's styles see `:style_nonce`.
 
         <.live_component
           module={PhoenixKit.Templates.Editor}
@@ -60,6 +62,20 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         the host re-renders with a new callback, new variables or changed
         files — not for a template with no files yet. No callback, no preview
         pane.
+      * `:style_nonce` — the page's Content-Security-Policy nonce for styles,
+        for a host whose policy allows inline styles by nonce only. The
+        preview's `<iframe srcdoc>` inherits the page's policy, so the nonce is
+        put on every `<style>` tag of the previewed HTML that has none —
+        in the preview only, never in the files or in what the renderer
+        returns. HTML with `<script`, `<svg`, `<math`, `<iframe`, `<frame`,
+        `<object`, `<embed`, `<select` or `<template` anywhere in it (any case)
+        gets no nonce at all and so shows unstyled; in any other HTML the nonce
+        is added only to `<style>` opening tags. Left out (or not a non-empty
+        string), the nonce of `PhoenixKitWeb.CSP` is used where PhoenixKit has that module; in a LiveView of the host's
+        own that needs PhoenixKit's `on_mount PhoenixKitWeb.CSP` and its nonces
+        in the session. With neither, the HTML is shown as it is. `style="…"`
+        attributes take no nonce: the policy has to allow them
+        (`style-src-attr 'unsafe-inline'`).
       * `:sample_variables` — the variables a template may use, as a map of
         name to a sample value. Listed beside the editor, and any placeholder
         in the current template that is not among them is flagged. The one map
@@ -145,6 +161,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     require Logger
 
     alias PhoenixKit.Templates
+    alias PhoenixKit.Templates.CSP
     alias PhoenixKit.Templates.Overrides
 
     @parts [:label, :subject, :text, :markdown, :html]
@@ -180,6 +197,8 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
          locales: [],
          preview: nil,
          sample_variables: %{},
+         style_nonce: nil,
+         preview_nonce: nil,
          after_write: nil,
          after_change: nil,
          convert: nil,
@@ -207,7 +226,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     @impl true
     def update(assigns, socket) do
       previous_files = files_of(socket, socket.assigns.selected)
-      socket = socket |> assign(assigns) |> sanitize_options()
+      socket = socket |> assign(assigns) |> sanitize_options() |> assign_preview_nonce()
 
       socket =
         if editable?(socket.assigns), do: socket, else: assign(socket, confirm_delete?: false)
@@ -911,6 +930,20 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
       )
     end
 
+    # The nonce put on the previewed styles: the host's attribute wins over
+    # what PhoenixKit knows of the page. Kept in the socket rather than worked
+    # out in `render/1`, where it would count as changed every time and send
+    # the whole preview again.
+    defp assign_preview_nonce(socket) do
+      nonce =
+        case socket.assigns.style_nonce do
+          given when is_binary(given) and given != "" -> given
+          _none -> CSP.nonce(:style)
+        end
+
+      assign(socket, preview_nonce: nonce)
+    end
+
     defp non_empty_strings(list) when is_list(list),
       do: Enum.filter(list, &(is_binary(&1) and &1 != ""))
 
@@ -1207,6 +1240,7 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
                 id={@id}
                 result={@preview_result}
                 tab={@preview_tab}
+                nonce={@preview_nonce}
                 myself={@myself}
               />
             </div>
@@ -1293,13 +1327,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
     attr :id, :string, required: true
     attr :result, :any, required: true
     attr :tab, :atom, default: :html
+    attr :nonce, :string, default: nil
     attr :myself, :any, required: true
 
     defp preview_pane(%{result: {:ok, subject, html, text}} = assigns) do
       assigns =
         assign(assigns,
           subject: subject,
-          html: html,
+          html: CSP.stamp_styles(html, assigns.nonce),
           text: text,
           show_html?: text == :none or assigns.tab == :html
         )
