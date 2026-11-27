@@ -93,6 +93,57 @@ defmodule PhoenixKit.Templates.CSPTest do
       end
     end
 
+    # In each of the next two, a browser reads `<style src=…>` as attributes of
+    # the <script>: a nonce written there would be the script's.
+    @script ~s|<script z='">' <style src=//e/a.js>|
+
+    # `<!x`, `<?` and the like are comments to a browser, ended by the first >.
+    test "ends a bogus comment at the first >, quotes or not" do
+      for opener <- [
+            ~s(<!x a=">),
+            ~s(<?x a=">),
+            ~s(</ a=">),
+            ~s(</1 a=">),
+            ~s(<!DOCTYPE a=">),
+            ~s(<![CDATA[ a=">)
+          ] do
+        assert CSP.stamp_styles(opener <> @script, "n1") == opener <> @script
+
+        assert CSP.stamp_styles(opener <> "<style>a{}</style>", "n1") ==
+                 opener <> ~s(<style nonce="n1">a{}</style>)
+      end
+
+      single = ~s(<!x a='>) <> ~s|<script z="'>" <style src=//e/a.js>|
+      assert CSP.stamp_styles(single, "n1") == single
+    end
+
+    # A = where a name begins is part of the name, and so is a quote after it.
+    test "opens a quoted value only where a tag has a value" do
+      for tag <- [
+            ~s(<a =">),
+            ~s(<a=">),
+            ~s(<a/=">),
+            ~s(<a b="1"=">),
+            ~s(</a =">)
+          ] do
+        assert CSP.stamp_styles(tag <> @script, "n1") == tag <> @script
+      end
+
+      # The same in a raw-text element's tag, which must still end at its >.
+      before = ~s(<textarea =">x</textarea><i q='">'></i>)
+
+      assert CSP.stamp_styles(before <> "<style>a{}</style>", "n1") ==
+               before <> ~s(<style nonce="n1">a{}</style>)
+    end
+
+    # A browser drops a tag whose quoted value is never closed, all it holds
+    # included.
+    test "reads an unclosed quoted value to the end" do
+      for html <- [~s(<a x="><style>a{}</style>), ~s(<xmp x='><style></style>)] do
+        assert CSP.stamp_styles(html, "n1") == html
+      end
+    end
+
     test "leaves the text of a <style> as it was" do
       assert CSP.stamp_styles(~s|<style>a::after{content:"<style>"}</style>|, "n1") ==
                ~s|<style nonce="n1">a::after{content:"<style>"}</style>|
@@ -190,7 +241,10 @@ defmodule PhoenixKit.Templates.CSPTest do
       for {name, html} <- [
             tags: String.duplicate("<a", 8_000) <> ~s( x=">"),
             comments: String.duplicate("<!-- a>", 5_000),
-            conditional_comments: String.duplicate("<!--[if mso]>", 4_000)
+            conditional_comments: String.duplicate("<!--[if mso]>", 4_000),
+            bogus_comments: String.duplicate("<!x", 8_000),
+            quotes: String.duplicate(~s(<a x=">), 5_000),
+            stray_equals: "<a " <> String.duplicate(~s(=" ), 10_000)
           ] do
         {microseconds, _stamped} = :timer.tc(fn -> CSP.stamp_styles(html, "n1") end)
 

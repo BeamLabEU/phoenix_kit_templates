@@ -26,6 +26,8 @@ defmodule PhoenixKit.Templates.CSP do
 
   For a preview only: a nonce belongs to one page, so it is never written into
   a file, a cache or a message that is sent.
+  The frame that shows it must not allow scripts: the markup is not parsed, so
+  hostile markup can still place the nonce on another element.
   """
   @spec stamp_styles(String.t() | nil, String.t() | nil) :: String.t() | nil
   def stamp_styles(html, nonce) when is_binary(html) and is_binary(nonce) and nonce != "" do
@@ -49,10 +51,15 @@ defmodule PhoenixKit.Templates.CSP do
   #   * a comment;
   #   * <plaintext>, whose text nothing ends;
   #   * a raw-text element: `<name`, its attributes, `>`, its text;
-  #   * any other tag.
+  #   * any other start or end tag;
+  #   * what HTML takes for a comment too (`<!x`, `<?`, `</1`), ended by the
+  #     first `>`, quotes or not.
   #
-  # A quote opens a value only after `=`, as in HTML: the one in `class=it's`
-  # must not swallow the tags after it. Whitespace is HTML's, which `\s` is not.
+  # A tag is read one attribute at a time, as in HTML: a quote opens a value only
+  # after the `=` of an attribute. The one in `class=it's`, in `<a=">` or in
+  # `<a =">` is part of a value or a name and must not swallow what follows. A
+  # quoted value left open runs to the end. Whitespace is HTML's, which `\s` is
+  # not.
   #
   # Keep it linear: once its opener has matched, a token must not fail, so each
   # end may also be the end of the input. One that failed there would be tried
@@ -60,15 +67,28 @@ defmodule PhoenixKit.Templates.CSP do
   #
   # PCRE gives up on a token of a few million bytes (its match limit). The scan
   # stops there: the styles from that token on stay unstamped, nothing is lost.
+  #
+  # This is HTML's tokenizer, in part, and no parser: what <svg>, <math> or a
+  # `<!--` inside a <script> change is not followed, and there a nonce can land
+  # outside a <style> tag. The preview's frame must stay without
+  # `allow-scripts`.
   defp token do
+    attributes = ~S"""
+    (?: [ \t\n\f\r\/]++
+      | [^ \t\n\f\r\/>][^ \t\n\f\r\/>=]*+
+        (?:[ \t\n\f\r]*+=[ \t\n\f\r]*+(?:"[^"]*+"?|'[^']*+'?|[^ \t\n\f\r>]*+))?+
+    )*+
+    """
+
     ~r/
       <!--(?:-?>|.*?(?:--!?>|\z))
       | <plaintext(?=[ \t\n\f\r\/>]).*+
       | (<(script|style|textarea|title|xmp|iframe|noembed|noframes)(?=[ \t\n\f\r\/>]))
-        ((?:=[ \t\n\f\r]*+(?:"[^"]*+"|'[^']*+')|[^>])*+)
+        (#{attributes})
         (>|\z)
         (.*?(?=<\/\2[ \t\n\f\r\/>]|\z))
-      | <[a-z\/!?](?:=[ \t\n\f\r]*+(?:"[^"]*+"|'[^']*+')|[^>])*+(?:>|\z)
+      | <\/?[a-z][^ \t\n\f\r\/>]*+ #{attributes} (?:>|\z)
+      | <[!?\/][^>]*+(?:>|\z)
     /isx
   end
 
