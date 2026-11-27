@@ -90,6 +90,91 @@ defmodule PhoenixKit.Templates.CSPTest do
       end
     end
 
+    test "leaves the text of the other raw-text elements as it was" do
+      for element <- ~w(xmp iframe noembed noframes) do
+        html = "<#{element}><style></#{element}>"
+
+        assert CSP.stamp_styles(html, "n1") == html
+
+        assert CSP.stamp_styles(html <> "<style></style>", "n1") ==
+                 html <> ~s(<style nonce="n1"></style>)
+      end
+
+      # Nothing ends <plaintext>.
+      html = "<plaintext></plaintext><style>a{}</style>"
+      assert CSP.stamp_styles(html, "n1") == html
+    end
+
+    test "takes only HTML's whitespace as the end of a tag name" do
+      # A vertical tab is part of the name to a browser: not a <style>.
+      assert CSP.stamp_styles("<style\v>a{}</style>", "n1") == "<style\v>a{}</style>"
+
+      for space <- [" ", "\t", "\n", "\f", "\r"] do
+        assert CSP.stamp_styles("<style#{space}>a{}</style>", "n1") ==
+                 ~s(<style nonce="n1"#{space}>a{}</style>)
+      end
+    end
+
+    # As in a browser, what is not closed runs to the end of the document.
+    test "reads an unclosed comment as a comment to the end" do
+      for html <- [
+            "<!-- <style>a{}</style>",
+            "<!-- x> <style>a{}</style>",
+            "<!--[if mso]> <style>a{}</style>"
+          ] do
+        assert CSP.stamp_styles(html, "n1") == html
+
+        assert CSP.stamp_styles("<style></style>" <> html, "n1") ==
+                 ~s(<style nonce="n1"></style>) <> html
+      end
+    end
+
+    test "leaves a <style> tag cut off at the end alone" do
+      for html <- ["<style", "<style ", ~s(<style media="print"), "<p><style media=print"] do
+        assert CSP.stamp_styles(html, "n1") == html
+      end
+    end
+
+    test "stamps a <style> that is never closed" do
+      assert CSP.stamp_styles("<style>a{}", "n1") == ~s(<style nonce="n1">a{})
+    end
+
+    test "copes with an unclosed tag or quote after a <style>" do
+      for rest <- ["<a", ~s(<a x="abc), "<a x='abc>", "<script>", "</"] do
+        assert CSP.stamp_styles("<style></style>" <> rest, "n1") ==
+                 ~s(<style nonce="n1"></style>) <> rest
+      end
+    end
+
+    test "stamps large messages" do
+      big = String.duplicate("a", 1_000_000)
+
+      for before <- [
+            "<!--#{big}-->",
+            ~s(<img src="data:image/png;base64,#{big}">),
+            "<script>#{big}</script>",
+            "<style>#{big}</style>"
+          ] do
+        assert CSP.stamp_styles(before <> "<style>b{}</style>", "n1") =~
+                 ~s(<style nonce="n1">b{}</style>)
+      end
+    end
+
+    # Each of these took seconds when every opener was tried to the end of the
+    # input and given up: the time grew with the square of the size. The bound
+    # is far above the milliseconds they take, for a slow machine.
+    test "reads hostile input in linear time" do
+      for {name, html} <- [
+            tags: String.duplicate("<a", 8_000) <> ~s( x=">"),
+            comments: String.duplicate("<!-- a>", 5_000),
+            conditional_comments: String.duplicate("<!--[if mso]>", 4_000)
+          ] do
+        {microseconds, _stamped} = :timer.tc(fn -> CSP.stamp_styles(html, "n1") end)
+
+        assert microseconds < 2_000_000, "#{name}: #{div(microseconds, 1000)} ms"
+      end
+    end
+
     test "escapes the nonce it writes" do
       assert CSP.stamp_styles("<style></style>", ~s(a"><script>&)) ==
                ~s(<style nonce="a&quot;&gt;&lt;script&gt;&amp;"></style>)

@@ -32,9 +32,10 @@ defmodule PhoenixKit.Templates.CSP do
     attribute = ~s( nonce="#{escape(nonce)}")
 
     Regex.replace(token(), html, fn
-      token, opening, name, rest, content ->
-        if String.downcase(name) == "style" and not nonced?(rest),
-          do: opening <> attribute <> rest <> content,
+      token, opening, name, rest, close, content ->
+        # `close` is empty for a tag cut off by the end of the input.
+        if String.downcase(name) == "style" and close == ">" and not nonced?(rest <> close),
+          do: opening <> attribute <> rest <> close <> content,
           else: token
     end)
   end
@@ -43,29 +44,41 @@ defmodule PhoenixKit.Templates.CSP do
 
   # The markup is read one token at a time, so that `<style` is rewritten only
   # where a browser reads a tag: not in a comment, in an attribute's value or in
-  # the text of <script>, <style>, <textarea> and <title>. In order:
+  # the text of a raw-text element. In order:
   #
   #   * a comment;
-  #   * one of those four elements: `<name`, the rest of its opening tag, its text;
+  #   * <plaintext>, whose text nothing ends;
+  #   * a raw-text element: `<name`, its attributes, `>`, its text;
   #   * any other tag.
   #
   # A quote opens a value only after `=`, as in HTML: the one in `class=it's`
-  # must not swallow the tags after it.
+  # must not swallow the tags after it. Whitespace is HTML's, which `\s` is not.
+  #
+  # Keep it linear: once its opener has matched, a token must not fail, so each
+  # end may also be the end of the input. One that failed there would be tried
+  # again from every later opener, in time growing with the square of the size.
+  #
+  # PCRE gives up on a token of a few million bytes (its match limit). The scan
+  # stops there: the styles from that token on stay unstamped, nothing is lost.
   defp token do
     ~r/
-      <!--(?:-?>|.*?--!?>)
-      | (<(script|style|textarea|title)(?=[\s\/>]))
-        ((?:=\s*+(?:"[^"]*+"|'[^']*+')|[^>])*+>)
-        (.*?(?=<\/\2[\s\/>]|\z))
-      | <[a-z\/!?](?:=\s*+(?:"[^"]*+"|'[^']*+')|[^>])*+>
+      <!--(?:-?>|.*?(?:--!?>|\z))
+      | <plaintext(?=[ \t\n\f\r\/>]).*+
+      | (<(script|style|textarea|title|xmp|iframe|noembed|noframes)(?=[ \t\n\f\r\/>]))
+        ((?:=[ \t\n\f\r]*+(?:"[^"]*+"|'[^']*+')|[^>])*+)
+        (>|\z)
+        (.*?(?=<\/\2[ \t\n\f\r\/>]|\z))
+      | <[a-z\/!?](?:=[ \t\n\f\r]*+(?:"[^"]*+"|'[^']*+')|[^>])*+(?:>|\z)
     /isx
   end
 
   # `rest` is the opening tag after its name. Values are blanked first, so that
   # only an attribute named `nonce` counts.
   defp nonced?(rest) do
-    names = Regex.replace(~r/=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/, rest, "=")
-    Regex.match?(~r/[\s\/]nonce(?=[\s=\/>])/i, names)
+    names =
+      Regex.replace(~r/=[ \t\n\f\r]*(?:"[^"]*"|'[^']*'|[^ \t\n\f\r>]+)/, rest, "=")
+
+    Regex.match?(~r/[ \t\n\f\r\/]nonce(?=[ \t\n\f\r=\/>])/i, names)
   end
 
   # The one call into PhoenixKit.
