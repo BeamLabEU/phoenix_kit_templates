@@ -67,12 +67,14 @@ if Code.ensure_loaded?(Phoenix.LiveComponent) do
         preview's `<iframe srcdoc>` inherits the page's policy, so the nonce is
         put on every `<style>` tag of the previewed HTML that has none —
         in the preview only, never in the files or in what the renderer
-        returns. Left out (or not a non-empty string), the nonce of
-        `PhoenixKitWeb.CSP` is used where PhoenixKit has that module; in a
-        LiveView of the host's own that needs PhoenixKit's `on_mount
-        PhoenixKitWeb.CSP` and its nonces in the session. With neither, the
-        HTML is shown as it is. `style="…"` attributes take no nonce: the
-        policy has to allow them (`style-src-attr 'unsafe-inline'`).
+        returns. HTML with the text `<script` anywhere in it (any case) gets no
+        nonce at all and so shows unstyled; this way the nonce is never put on
+        a script element of the previewed message. Left out (or not a non-empty
+        string), the nonce of `PhoenixKitWeb.CSP` is used where PhoenixKit has
+        that module; in a LiveView of the host's own that needs PhoenixKit's
+        `on_mount PhoenixKitWeb.CSP` and its nonces in the session. With
+        neither, the HTML is shown as it is. `style="…"` attributes take no
+        nonce: the policy has to allow them (`style-src-attr 'unsafe-inline'`).
       * `:sample_variables` — the variables a template may use, as a map of
         name to a sample value. Listed beside the editor, and any placeholder
         in the current template that is not among them is flagged. The one map

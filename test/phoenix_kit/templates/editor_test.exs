@@ -76,6 +76,9 @@ defmodule PhoenixKit.Templates.EditorTest do
     end
 
     def preview_styled(_name, _locale),
+      do: {"S", "<style>p{color:red}</style><p>Styled</p>"}
+
+    def preview_scripted(_name, _locale),
       do: {"S", "<style>p{color:red}</style><p>Styled</p><script>x()</script>"}
 
     # Crude stand-ins for a host's Markdown renderer: like a real one, they
@@ -859,15 +862,22 @@ defmodule PhoenixKit.Templates.EditorTest do
   end
 
   describe "the preview under a nonce Content-Security-Policy" do
-    @styled ~s|<style>p{color:red}</style><p>Styled</p><script>x()</script>|
+    @styled ~s|<style>p{color:red}</style><p>Styled</p>|
 
     test "stamps the host's style_nonce on the previewed styles only", %{tmp_dir: root} do
       seed(root)
       view = mount_editor(root, %{preview: {Host, :preview_styled}, style_nonce: "abc123"})
       select(view, "order_offer")
 
-      assert srcdoc(view) ==
-               ~s|<style nonce="abc123">p{color:red}</style><p>Styled</p><script>x()</script>|
+      assert srcdoc(view) == ~s|<style nonce="abc123">p{color:red}</style><p>Styled</p>|
+    end
+
+    test "shows a message with a script in it unstamped", %{tmp_dir: root} do
+      seed(root)
+      view = mount_editor(root, %{preview: {Host, :preview_scripted}, style_nonce: "abc123"})
+      select(view, "order_offer")
+
+      assert srcdoc(view) == @styled <> "<script>x()</script>"
     end
 
     test "leaves the preview as it is without a nonce", %{tmp_dir: root} do

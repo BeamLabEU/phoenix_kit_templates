@@ -69,13 +69,31 @@ defmodule PhoenixKit.Templates.CSPTest do
       end
     end
 
-    test "never touches <script>, its text included" do
-      html = ~s|<script>document.write("<style>a{}</style>")</script>|
+    # No markup makes a script element without this text, so none can ever be
+    # given the nonce, however the rest is read.
+    test "leaves a message containing <script wholly unstamped" do
+      trap_ = ~s|<script z='">' <style src=//e/a.js>|
 
-      assert CSP.stamp_styles(html, "n1") == html
-      assert CSP.stamp_styles(~s(<script src="x.js"></script>), "n1") =~ ~s(<script src="x.js">)
-      refute CSP.stamp_styles("<script></script><style></style>", "n1") =~ ~s(<script nonce)
-      assert CSP.stamp_styles("<script></script><style></style>", "n1") =~ ~s(<style nonce="n1">)
+      for html <- [
+            "<style>a{}</style><script></script>",
+            "<SCRIPT>x()</SCRIPT><style>a{}</style>",
+            "<ScRiPt src=x.js></ScRiPt><style></style>",
+            "<svg><script></script></svg><style></style>",
+            ~s(<svg><![CDATA[><a x="]]>) <> trap_,
+            ~s(<script><!--<script></script><a x="</script>) <> trap_,
+            # Wherever the text is: this is not a reading of the markup.
+            "<!-- <script> --><style></style>",
+            ~s(<img alt="<script>"><style></style>)
+          ] do
+        assert CSP.stamp_styles(html, "n1") == html
+      end
+    end
+
+    test "stamps a message that only speaks of scripts" do
+      before = "<noscript>script</noscript><p>&lt;script&gt; < script></p>"
+
+      assert CSP.stamp_styles(before <> "<style>a{}</style>", "n1") ==
+               before <> ~s(<style nonce="n1">a{}</style>)
     end
 
     test "leaves text that only looks like a tag as it was" do
@@ -93,9 +111,9 @@ defmodule PhoenixKit.Templates.CSPTest do
       end
     end
 
-    # In each of the next two, a browser reads `<style src=…>` as attributes of
-    # the <script>: a nonce written there would be the script's.
-    @script ~s|<script z='">' <style src=//e/a.js>|
+    # In each of the next two, a browser reads `<style href=…>` as attributes of
+    # the <link>: a nonce written there would be the link's.
+    @link ~s|<link z='">' <style href=//e/a.css>|
 
     # `<!x`, `<?` and the like are comments to a browser, ended by the first >.
     test "ends a bogus comment at the first >, quotes or not" do
@@ -107,13 +125,13 @@ defmodule PhoenixKit.Templates.CSPTest do
             ~s(<!DOCTYPE a=">),
             ~s(<![CDATA[ a=">)
           ] do
-        assert CSP.stamp_styles(opener <> @script, "n1") == opener <> @script
+        assert CSP.stamp_styles(opener <> @link, "n1") == opener <> @link
 
         assert CSP.stamp_styles(opener <> "<style>a{}</style>", "n1") ==
                  opener <> ~s(<style nonce="n1">a{}</style>)
       end
 
-      single = ~s(<!x a='>) <> ~s|<script z="'>" <style src=//e/a.js>|
+      single = ~s(<!x a='>) <> ~s|<link z="'>" <style href=//e/a.css>|
       assert CSP.stamp_styles(single, "n1") == single
     end
 
@@ -126,7 +144,7 @@ defmodule PhoenixKit.Templates.CSPTest do
             ~s(<a b="1"=">),
             ~s(</a =">)
           ] do
-        assert CSP.stamp_styles(tag <> @script, "n1") == tag <> @script
+        assert CSP.stamp_styles(tag <> @link, "n1") == tag <> @link
       end
 
       # The same in a raw-text element's tag, which must still end at its >.
@@ -214,7 +232,7 @@ defmodule PhoenixKit.Templates.CSPTest do
     end
 
     test "copes with an unclosed tag or quote after a <style>" do
-      for rest <- ["<a", ~s(<a x="abc), "<a x='abc>", "<script>", "</"] do
+      for rest <- ["<a", ~s(<a x="abc), "<a x='abc>", "<textarea>", "</"] do
         assert CSP.stamp_styles("<style></style>" <> rest, "n1") ==
                  ~s(<style nonce="n1"></style>) <> rest
       end
@@ -226,7 +244,6 @@ defmodule PhoenixKit.Templates.CSPTest do
       for before <- [
             "<!--#{big}-->",
             ~s(<img src="data:image/png;base64,#{big}">),
-            "<script>#{big}</script>",
             "<style>#{big}</style>"
           ] do
         assert CSP.stamp_styles(before <> "<style>b{}</style>", "n1") =~
