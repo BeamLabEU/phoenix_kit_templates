@@ -21,30 +21,38 @@ defmodule PhoenixKit.Templates.CSP do
   end
 
   @doc """
-  `html` with `nonce="…"` on every `<style>` tag that has none. `html` comes
-  back unchanged without a nonce, and unchanged when the text `<script` is in it
-  anywhere, in any case of letters: so the nonce is never put on a script
-  element of the previewed document.
+  `html` with `nonce="…"` on its `<style>` tags that have none, for a preview.
+
+  A message that has `<script`, `<svg`, `<math`, `<iframe`, `<frame`,
+  `<object`, `<embed`, `<select` or `<template` in it anywhere, in any case of
+  letters, is left as it is; otherwise the nonce is added only to `<style>`
+  opening tags. Without a nonce, `html` is left as it is too.
+
+  What this costs is cosmetic: such a message (the text in a comment is enough)
+  previews unstyled, and so do the styles from a part of a few million bytes on.
 
   For a preview only: a nonce belongs to one page, so it is never written into
   a file, a cache or a message that is sent. The frame that shows it must not
-  allow scripts. The markup is not parsed: inside `<svg>` or `<math>`, hostile
-  markup can still put the nonce on another element (a `<link>`, say), and a
-  document the message embeds (an `<iframe srcdoc>`) is not covered.
+  allow scripts, which is also how the markup is read here: `<noscript>` holds
+  markup.
   """
   @spec stamp_styles(String.t() | nil, String.t() | nil) :: String.t() | nil
   def stamp_styles(html, nonce) when is_binary(html) and is_binary(nonce) and nonce != "" do
-    if script?(html), do: html, else: stamp(html, ~s( nonce="#{escape(nonce)}"))
+    if leave_alone?(html), do: html, else: stamp(html, ~s( nonce="#{escape(nonce)}"))
   end
 
   def stamp_styles(html, _nonce), do: html
 
-  # Whether `html` could hold a script element: no markup makes one without this
-  # text. A NUL in a tag's name becomes U+FFFD, `< script` is text, and a
-  # character reference never opens a tag. Looked for in the whole input, not
-  # where the reading below finds tags, so that nothing it gets wrong can hand a
-  # script the nonce.
-  defp script?(html), do: Regex.match?(~r/<(script)/i, html)
+  # Whether `html` may hold what the reading below does not follow: a script,
+  # foreign content (<svg>, <math>), an embedded document, or where a browser
+  # drops a raw-text element's tag and reads its text as markup: in a frameset,
+  # in a <select> (parsers by the older rules) and after <template><col>. None
+  # of these exists without this text: a NUL in a tag's name becomes U+FFFD,
+  # `< svg` is text, and a character reference never opens a tag. Looked for in
+  # the whole input, not where that reading finds tags, so that nothing it gets
+  # wrong matters here.
+  defp leave_alone?(html),
+    do: Regex.match?(~r/<(script|svg|math|iframe|frame|object|embed|select|template)/i, html)
 
   defp stamp(html, attribute) do
     Regex.replace(token(), html, fn
@@ -80,9 +88,8 @@ defmodule PhoenixKit.Templates.CSP do
   # PCRE gives up on a token of a few million bytes (its match limit). The scan
   # stops there: the styles from that token on stay unstamped, nothing is lost.
   #
-  # This is HTML's tokenizer, in part, and no parser: what <svg> and <math>
-  # change is not followed, and there a nonce can land outside a <style> tag
-  # (never on a script: see `script?/1`). No `<script>` reaches this reading.
+  # This is HTML's tokenizer, in part, and no parser. What would put it out of
+  # step with a browser never reaches it: see `leave_alone?/1`.
   defp token do
     attributes = ~S"""
     (?: [ \t\n\f\r\/]++
@@ -94,7 +101,7 @@ defmodule PhoenixKit.Templates.CSP do
     ~r/
       <!--(?:-?>|.*?(?:--!?>|\z))
       | <plaintext(?=[ \t\n\f\r\/>]).*+
-      | (<(style|textarea|title|xmp|iframe|noembed|noframes)(?=[ \t\n\f\r\/>]))
+      | (<(style|textarea|title|xmp|noembed|noframes)(?=[ \t\n\f\r\/>]))
         (#{attributes})
         (>|\z)
         (.*?(?=<\/\2[ \t\n\f\r\/>]|\z))

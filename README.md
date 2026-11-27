@@ -295,8 +295,9 @@ shows; `editable={false}` makes it read-only. `preview(name, locale)` returns
 shown in an `<iframe sandbox>` that cannot run scripts, and a text version adds
 a *Text* tab beside it. Under a Content-Security-Policy that allows inline
 styles by nonce only, the preview's `<style>` tags get the page's nonce: pass it
-as `style_nonce` (PhoenixKit's is found by itself). A message with `<script` in
-it gets none and previews without its styles. `after_write` receives the
+as `style_nonce` (PhoenixKit's is found by itself). A message with a script,
+SVG, MathML, an embedded frame or object, a `<select>` or a `<template>` gets
+none and previews without its styles. `after_write` receives the
 paths a save or copy created; `after_change` receives the template's name after any change on disk — a save
 that wrote or deleted files, a copy, a deleted template. If a callback or
 `preview` fails, the editor shows the error instead of crashing and

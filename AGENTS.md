@@ -25,13 +25,12 @@ no nonce: the host's `style-src-attr` has to allow them.
   inherits the embedding page's policy: the previewed message's `<style>` tags
   are stamped with the page's nonce (`PhoenixKit.Templates.CSP.stamp_styles/2`).
   The nonce is the editor's `style_nonce` attribute, else PhoenixKit's.
-- A message with `<script` anywhere in it (any case) is not stamped at all, so
-  the nonce never lands on a script element of the previewed document. Keep that
-  check on the whole input, ahead of any reading of the markup.
-- Past it, the stamping reads markup as HTML's tokenizer does, in part; it is no
-  parser (inside `<svg>` / `<math>` the nonce can land on another element), and
-  documents the message embeds are not covered. The preview's frame stays
-  `sandbox=""`: never `allow-scripts`.
+- A message with `<script`, `<svg`, `<math`, `<iframe`, `<frame`, `<object`,
+  `<embed`, `<select` or `<template` anywhere in it (any case) is left as it is;
+  otherwise the nonce is added only to `<style>` opening tags. Keep that check on
+  the whole input, ahead of any reading of the markup: the reading is HTML's
+  tokenizer in part, not a parser, and those are what put it out of step with one.
+- The preview's frame stays `sandbox=""`: never `allow-scripts`.
 - Stamp at render time, the preview only. A nonce belongs to one page: never
   put it into a file, the renderer's cache or a message that is sent.
 - `PhoenixKitWeb.CSP` is reached only through `PhoenixKit.Templates.CSP`, which

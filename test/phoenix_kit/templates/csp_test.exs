@@ -89,6 +89,55 @@ defmodule PhoenixKit.Templates.CSPTest do
       end
     end
 
+    # Foreign content and embedded documents follow rules of their own.
+    test "leaves a message with svg, math or an embedded document unstamped" do
+      for html <- [
+            # A script in the nested document, written as character references.
+            ~s(<svg><![CDATA[><a x="]]><iframe srcdoc='&lt;script z=">" <style src=//e/a.js>'>),
+            # A <link> in this one.
+            ~s(<svg><![CDATA[><a x="]]><link rel=stylesheet z='">' <style href=//e/a.css>),
+            "<SVG></SVG><style></style>",
+            "<style></style><math></math>",
+            "<IFrame></IFrame><style></style>",
+            "<frameset><frame></frameset><style></style>",
+            "<object></object><style></style>",
+            "<embed src=x><style></style>",
+            ~s(<img alt="<svg>"><style></style>)
+          ] do
+        assert CSP.stamp_styles(html, "n1") == html
+      end
+    end
+
+    # Parsers by the older rules ignore a raw-text element's tag inside
+    # <select>; lexbor is one of them, and reads this nonce onto the <link>.
+    test "leaves a message with a select unstamped" do
+      for html <- [
+            ~s(<select><xmp></select><link rel=stylesheet z='</xmp>' <style href=//e/a.css>),
+            "<style></style><SELECT></SELECT>"
+          ] do
+        assert CSP.stamp_styles(html, "n1") == html
+      end
+    end
+
+    # After <template><col> a browser drops other tags, a raw-text element's
+    # among them.
+    test "leaves a message with a template unstamped" do
+      for html <- [
+            ~s(<template><col><style></stylex></table></template><link z='</style>' <style href=u>),
+            ~s(<template><col><xmp></xmpx></table></template><link z='</xmp>' <style href=u>),
+            "<style></style><TEMPLATE></TEMPLATE>"
+          ] do
+        assert CSP.stamp_styles(html, "n1") == html
+      end
+    end
+
+    test "stamps a message that only speaks of them" do
+      before = "<p>&lt;svg&gt; &lt;iframe&gt; < object> svg math embed select template</p>"
+
+      assert CSP.stamp_styles(before <> "<style>a{}</style>", "n1") ==
+               before <> ~s(<style nonce="n1">a{}</style>)
+    end
+
     test "stamps a message that only speaks of scripts" do
       before = "<noscript>script</noscript><p>&lt;script&gt; < script></p>"
 
@@ -183,7 +232,7 @@ defmodule PhoenixKit.Templates.CSPTest do
     end
 
     test "leaves the text of the other raw-text elements as it was" do
-      for element <- ~w(xmp iframe noembed noframes) do
+      for element <- ~w(xmp noembed noframes) do
         html = "<#{element}><style></#{element}>"
 
         assert CSP.stamp_styles(html, "n1") == html
