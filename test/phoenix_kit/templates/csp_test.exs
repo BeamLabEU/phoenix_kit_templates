@@ -312,6 +312,8 @@ defmodule PhoenixKit.Templates.CSPTest do
             quotes: String.duplicate(~s(<a x=">), 5_000),
             stray_equals: "<a " <> String.duplicate(~s(=" ), 10_000)
           ] do
+        html = html <> "<style></style>"
+
         {microseconds, _stamped} = :timer.tc(fn -> CSP.stamp_styles(html, "n1") end)
 
         assert microseconds < 2_000_000, "#{name}: #{div(microseconds, 1000)} ms"

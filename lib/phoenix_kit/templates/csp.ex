@@ -38,7 +38,11 @@ defmodule PhoenixKit.Templates.CSP do
   """
   @spec stamp_styles(String.t() | nil, String.t() | nil) :: String.t() | nil
   def stamp_styles(html, nonce) when is_binary(html) and is_binary(nonce) and nonce != "" do
-    if leave_alone?(html), do: html, else: stamp(html, ~s( nonce="#{escape(nonce)}"))
+    if Regex.match?(~r{<style}i, html) and not leave_alone?(html) do
+      stamp(html, ~s( nonce="#{escape(nonce)}"))
+    else
+      html
+    end
   end
 
   def stamp_styles(html, _nonce), do: html
@@ -53,16 +57,6 @@ defmodule PhoenixKit.Templates.CSP do
   # wrong matters here.
   defp leave_alone?(html),
     do: Regex.match?(~r/<(script|svg|math|iframe|frame|object|embed|select|template)/i, html)
-
-  defp stamp(html, attribute) do
-    Regex.replace(token(), html, fn
-      token, opening, name, rest, close, content ->
-        # `close` is empty for a tag cut off by the end of the input.
-        if String.downcase(name) == "style" and close == ">" and not nonced?(rest <> close),
-          do: opening <> attribute <> rest <> close <> content,
-          else: token
-    end)
-  end
 
   # The markup is read one token at a time, so that `<style` is rewritten only
   # where a browser reads a tag: not in a comment, in an attribute's value or in
@@ -90,24 +84,32 @@ defmodule PhoenixKit.Templates.CSP do
   #
   # This is HTML's tokenizer, in part, and no parser. What would put it out of
   # step with a browser never reaches it: see `leave_alone?/1`.
-  defp token do
-    attributes = ~S"""
-    (?: [ \t\n\f\r\/]++
-      | [^ \t\n\f\r\/>][^ \t\n\f\r\/>=]*+
-        (?:[ \t\n\f\r]*+=[ \t\n\f\r]*+(?:"[^"]*+"?|'[^']*+'?|[^ \t\n\f\r>]*+))?+
-    )*+
-    """
+  @attributes ~S"""
+  (?: [ \t\n\f\r\/]++
+    | [^ \t\n\f\r\/>][^ \t\n\f\r\/>=]*+
+      (?:[ \t\n\f\r]*+=[ \t\n\f\r]*+(?:"[^"]*+"?|'[^']*+'?|[^ \t\n\f\r>]*+))?+
+  )*+
+  """
 
-    ~r/
+  @token ~r/
       <!--(?:-?>|.*?(?:--!?>|\z))
       | <plaintext(?=[ \t\n\f\r\/>]).*+
       | (<(style|textarea|title|xmp|noembed|noframes)(?=[ \t\n\f\r\/>]))
-        (#{attributes})
+        (#{@attributes})
         (>|\z)
         (.*?(?=<\/\2[ \t\n\f\r\/>]|\z))
-      | <\/?[a-z][^ \t\n\f\r\/>]*+ #{attributes} (?:>|\z)
+      | <\/?[a-z][^ \t\n\f\r\/>]*+ #{@attributes} (?:>|\z)
       | <[!?\/][^>]*+(?:>|\z)
     /isx
+
+  defp stamp(html, attribute) do
+    Regex.replace(@token, html, fn
+      token, opening, name, rest, close, content ->
+        # `close` is empty for a tag cut off by the end of the input.
+        if String.downcase(name) == "style" and close == ">" and not nonced?(rest <> close),
+          do: opening <> attribute <> rest <> close <> content,
+          else: token
+    end)
   end
 
   # `rest` is the opening tag after its name. It is read one attribute at a

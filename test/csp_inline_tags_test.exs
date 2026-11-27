@@ -15,10 +15,7 @@ defmodule PhoenixKit.Templates.CSPInlineTagsTest do
 
   @doc_heredoc ~r/@(?:moduledoc|doc|typedoc|shortdoc)\s+(?:~[sS])?"""\n.*?\n\s*"""/s
 
-  # The package's prebuilt JS, scanned for markup it builds. It ships none.
-  @bundles []
-
-  @tag_opening ~r/<(script|style)\b[^>]*>/s
+  @tag_opening ~r/<(script|style)(?=[\s\/>])[^>]*>/is
 
   # Exempt: a colocated hook (`<script :type={Phoenix.LiveView.ColocatedHook}>`) is taken out
   # of the template by the compiler and is never rendered as an inline tag.
@@ -26,7 +23,7 @@ defmodule PhoenixKit.Templates.CSPInlineTagsTest do
     offenders =
       for path <- Path.wildcard("lib/**/*.{ex,heex}"),
           {opening, number} <- tag_openings(path),
-          not String.contains?(opening, "src="),
+          not external_script?(opening),
           not String.contains?(opening, "ColocatedHook"),
           not (opening =~ "CSP.nonce("),
           do: "#{path}:#{number}"
@@ -34,6 +31,20 @@ defmodule PhoenixKit.Templates.CSPInlineTagsTest do
     assert offenders == [],
            "inline tags without a nonce (see `PhoenixKit.Templates.CSP.nonce/1` and " <>
              "AGENTS.md, \"Content-Security-Policy\"):\n" <> Enum.join(offenders, "\n")
+  end
+
+  defp external_script?(opening) do
+    opening
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("script[src]")
+    |> Enum.any?()
+  end
+
+  test "only a script with a src attribute is external" do
+    assert external_script?(~s(<SCRIPT defer SRC = "preview.js">))
+    refute external_script?(~s(<script data-src="preview.js">))
+    refute external_script?(~s(<script title=" src=preview.js">))
+    refute external_script?(~s(<style src="preview.css">))
   end
 
   # `nonce={…}` is HEEx. In a plain string it is rendered as written, a literal attribute
@@ -113,58 +124,8 @@ defmodule PhoenixKit.Templates.CSPInlineTagsTest do
     refute ~s(only = "x") =~ @handler
   end
 
-  test "the bundle builds no markup with an inline event handler" do
-    offenders =
-      for {path, line, number} <- bundle_lines(),
-          line =~ ~r/\son[a-z]+=\\?["']/ or line =~ ~r/javascript:/i,
-          do: "#{path}:#{number}"
-
-    assert offenders == [], Enum.join(offenders, "\n")
-  end
-
-  # A `<style>` / `<script>` a bundle creates is checked against the page's policy like any
-  # other: it is stamped with the page's nonce (PhoenixKit's `PhoenixKitInternals.adoptStyle`,
-  # when there) before it is inserted, and never written as a string for `innerHTML`. No
-  # `eval` either: `script-src` without 'unsafe-eval' blocks it.
-  test "the bundle creates no unstamped <style>/<script>, and evaluates no strings" do
-    lines = bundle_lines()
-
-    offenders =
-      for {{path, line, number}, index} <- Enum.with_index(lines),
-          next = lines |> Enum.slice(index + 1, 6) |> Enum.map(&elem(&1, 1)),
-          problem = bundle_problem(line, next),
-          do: "#{path}:#{number} #{problem}"
-
-    assert offenders == [], Enum.join(offenders, "\n")
-  end
-
-  defp bundle_problem(line, next_lines) do
-    cond do
-      line =~ ~r/createElement\(["'](?:style|script)["']\)/ and
-          not Enum.any?(next_lines, &(&1 =~ "adoptStyle")) ->
-        "creates a <style>/<script> that is not stamped in the next lines"
-
-      line =~ ~r/["'`]<(?:style|script)\b/ ->
-        "builds a <style>/<script> tag as a string"
-
-      line =~ ~r/\beval\(|new Function\(/ ->
-        "evaluates a string"
-
-      true ->
-        nil
-    end
-  end
-
-  test "the scanned bundles are the only JavaScript the package ships" do
-    assert Enum.sort(Path.wildcard("{lib,priv}/**/*.{js,ts}")) == Enum.sort(@bundles)
-  end
-
-  # The bundles' lines without their comment lines.
-  defp bundle_lines do
-    for path <- @bundles,
-        {line, number} <- path |> File.read!() |> String.split("\n") |> Enum.with_index(1),
-        not (line =~ ~r{^\s*(//|\*|/\*)}),
-        do: {path, line, number}
+  test "the package ships no JavaScript" do
+    assert Path.wildcard("{lib,priv}/**/*.{js,ts}") == []
   end
 
   # Every opening `<script …>` / `<style …>` of the file with the line it starts on.
